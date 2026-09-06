@@ -1,6 +1,10 @@
-# detour
+<div align="center">
+  <img src="assets/logo.png" alt="detour logo" width="160">
+  <h1>detour</h1>
+  <p><em>Domain-based split tunneling with sing-box over WireGuard.</em></p>
+</div>
 
-Domain-based split tunneling with sing-box over WireGuard. Listed domains take a detour through the tunnel. Everything else goes straight through.
+Listed domains take a detour through the tunnel. Everything else goes straight through.
 
 ## How it works
 
