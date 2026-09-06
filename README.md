@@ -17,13 +17,9 @@ Domain-based split tunneling with sing-box over WireGuard. Listed domains take a
 
 ## Install detour
 
-The indicator needs the GTK bindings from the OS, so detour runs on the system Python with system packages visible. The clone is only needed during the install:
+    curl -fsSL https://raw.githubusercontent.com/adyavanapalli/detour/main/install.sh | bash
 
-    git clone https://github.com/adyavanapalli/detour /tmp/detour
-    uv venv --system-site-packages --python /usr/bin/python3 ~/.local/share/detour/venv
-    uv pip install --python ~/.local/share/detour/venv/bin/python /tmp/detour
-    ln -s ~/.local/share/detour/venv/bin/detour ~/.local/bin/detour
-    rm -rf /tmp/detour
+The script installs into `~/.local/share/detour/venv` on the system Python, so the indicator can use the OS GTK bindings, and links `~/.local/bin/detour`. Read `install.sh` before you run it; it is short.
 
 ## Commands
 
