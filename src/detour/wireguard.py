@@ -1,4 +1,4 @@
-"""WireGuard identities: keys and the server-side peer block."""
+"""WireGuard identities: keys, the server-side peer block, wg-quick conf import."""
 import base64
 import ipaddress
 import secrets
@@ -32,3 +32,27 @@ def peer_block(device_public_key: str, device_address: str) -> str:
     """The [Peer] section to add on the server for this device."""
     host = ipaddress.ip_interface(device_address).ip
     return f"[Peer]\nPublicKey = {device_public_key}\nAllowedIPs = {host}/{host.max_prefixlen}\n"
+
+
+FIELDS = {
+    ("interface", "privatekey"): "device_private_key",
+    ("interface", "address"): "device_address",
+    ("interface", "dns"): "tunnel_dns",
+    ("peer", "publickey"): "server_public_key",
+    ("peer", "endpoint"): "server_endpoint",
+}
+
+
+def parse_conf(text: str) -> dict:
+    """The detour config keys found in a wg-quick style conf."""
+    found, section = {}, None
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+        elif "=" in line and section:
+            name, value = (s.strip() for s in line.split("=", 1))
+            key = FIELDS.get((section, name.lower()))
+            if key and key not in found:
+                found[key] = value.split(",")[0].strip()
+    return found
