@@ -50,13 +50,13 @@ def service_state() -> str:
     return r.stdout.strip() or "unknown"
 
 
-def collect(timeout: float = 8) -> probes.Facts:
+def collect(timeout: float = 8, exit_check: bool = True) -> probes.Facts:
     """The status facts for this machine."""
     f = probes.Facts(service=service_state(), tun=TUN.exists())
     if f.service == "active":
         f.dns_intercepted = probes.dns_intercepted()
         f.health_listed = probes.health_listed()
-        if f.health_listed:
+        if f.health_listed and exit_check:
             f.exit_tunnel, f.exit_direct = probes.exit_ips(timeout)
             f.exit_checked = True
     return f
