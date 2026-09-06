@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 
 TARGETS = ("linux", "android")
-KEYS = ("rules_url", "server_endpoint", "server_public_key", "tunnel_dns", "device_address", "device_private_key")
+KEYS = ("rules_url", "server_endpoint", "server_public_key", "tunnel_dns", "device_address", "device_private_key", "api_secret")
 
 
 def path() -> Path:
