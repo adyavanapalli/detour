@@ -1,6 +1,5 @@
 """GNOME top-bar indicator: the sing-box cube, colored by the shared verdict."""
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -49,7 +48,7 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart={exe} linux tray
+ExecStart={python} -m detour.tray
 Restart=on-failure
 RestartSec=3
 
@@ -145,8 +144,7 @@ def install() -> None:
     """Icons, the user unit, and start it. Re-running restarts the indicator with the new code."""
     write_icons()
     UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    exe = Path(shutil.which("detour") or sys.argv[0]).resolve()
-    UNIT_FILE.write_text(UNIT_TEXT.format(exe=exe))
+    UNIT_FILE.write_text(UNIT_TEXT.format(python=sys.executable))
     for step in (("daemon-reload",), ("enable", "detour-tray.service"), ("restart", "detour-tray.service")):
         subprocess.run(["systemctl", "--user", *step], check=True)
 
@@ -155,3 +153,7 @@ def uninstall() -> None:
     subprocess.run(["systemctl", "--user", "disable", "--now", "detour-tray.service"], check=False)
     UNIT_FILE.unlink(missing_ok=True)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+
+
+if __name__ == "__main__":
+    main()
