@@ -1,13 +1,11 @@
 """Linux target: install, uninstall, and status facts for the sing-box service."""
 import os
-import secrets
 import subprocess
 import tempfile
 import urllib.request
-from importlib import resources
 from pathlib import Path
 
-from detour import config, probes, render, wireguard
+from detour import device, probes
 
 UNIT = "sing-box"
 TUN = Path("/sys/class/net/sbtun0")
@@ -17,7 +15,6 @@ RESOLVED_DROPIN = Path("/etc/systemd/resolved.conf.d/10-detour.conf")
 RESOLVED_TEXT = "[Resolve]\nDNS=127.0.0.1\nDomains=~.\n"
 UNIT_DROPIN = Path("/etc/systemd/system/sing-box.service.d/override.conf")
 UNIT_TEXT = "[Service]\nRestart=always\nRestartSec=3s\n"
-REQUIRED = ("rules_url", "server_endpoint", "server_public_key", "tunnel_dns", "device_address")
 
 APT_KEY = Path("/etc/apt/keyrings/sagernet.asc")
 APT_KEY_URL = "https://sing-box.app/gpg.key"
@@ -62,41 +59,6 @@ def collect(timeout: float = 8, exit_check: bool = True) -> probes.Facts:
     return f
 
 
-def ensure_identity() -> dict:
-    """The [linux] table, complete: generates the device key and the API secret if missing."""
-    table = config.require("linux", REQUIRED)
-    if not table.get("device_private_key"):
-        config.put("linux", "device_private_key", wireguard.generate_private_key())
-        public = wireguard.public_key(config.get("linux", "device_private_key"))
-        print("new device key. Add this peer on the server:\n")
-        print(wireguard.peer_block(public, table["device_address"]))
-    if not table.get("api_secret"):
-        config.put("linux", "api_secret", secrets.token_hex(24))
-    return config.get("linux")
-
-
-def values(table: dict) -> dict:
-    """The template values from a complete [linux] table."""
-    host, port = table["server_endpoint"].rsplit(":", 1)
-    return dict(rules_url=table["rules_url"], server_host=host, server_port=port,
-                server_public_key=table["server_public_key"], tunnel_dns=table["tunnel_dns"],
-                device_address=table["device_address"], device_private_key=table["device_private_key"],
-                api_secret=table["api_secret"])
-
-
-def rendered_config(table: dict) -> str:
-    """The sing-box config for this machine, accepted by sing-box check."""
-    template = resources.files("detour").joinpath("templates/linux.json").read_text()
-    text = render.render(template, values(table))
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        f.write(text)
-    try:
-        run("sing-box", "check", "-c", f.name)
-    finally:
-        os.unlink(f.name)
-    return text
-
-
 def install_package() -> None:
     """Add SagerNet's apt repository and install sing-box from it."""
     with urllib.request.urlopen(APT_KEY_URL, timeout=30) as r:
@@ -108,9 +70,9 @@ def install_package() -> None:
 
 def install() -> None:
     """Make this machine a detour client. Each root step is printed as it runs."""
-    table = ensure_identity()
+    table = device.ensure_identity("linux")
     install_package()
-    text = rendered_config(table)
+    text = device.rendered_config("linux", table)
     for stale in CONF_DIR.glob("*.json"):  # the service loads every file in this directory
         if stale.name != "config.json":
             run("rm", "-f", str(stale), root=True)
