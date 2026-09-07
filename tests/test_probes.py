@@ -3,7 +3,7 @@ import unittest
 
 from detour.probes import Facts, assess
 
-HEALTHY = dict(service="active", tun=True, dns_intercepted=True, health_listed=True,
+HEALTHY = dict(service="active", tun=True, fail_closed=True, dns_intercepted=True, health_listed=True,
                exit_checked=True, exit_tunnel="203.0.113.7", exit_direct="198.51.100.9")
 
 
@@ -23,9 +23,11 @@ class AssessTest(unittest.TestCase):
         self.assertEqual(self.state(dns_intercepted=False), "warn")
         self.assertEqual(self.state(health_listed=False), "warn")
         self.assertEqual(self.state(exit_tunnel=None), "warn")  # tunnel down
+        self.assertEqual(self.state(fail_closed=False), "warn")
 
     def test_same_exit_is_leak(self):
         self.assertEqual(self.state(exit_direct="203.0.113.7"), "leak")
+        self.assertEqual(self.state(exit_direct="203.0.113.7", fail_closed=False), "leak")  # the leak outranks it
 
     def test_two_failed_fetches_are_not_a_leak(self):
         self.assertEqual(self.state(exit_tunnel=None, exit_direct=None), "warn")

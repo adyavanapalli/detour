@@ -14,6 +14,7 @@ class Facts:
     """What a target reports. None means not checked yet."""
     service: str = "unknown"  # active, inactive, failed, ...
     tun: bool = False
+    fail_closed: bool | None = None  # the system blocks traffic, not just this tool's, when the service is down
     dns_intercepted: bool | None = None  # the canary returned NXDOMAIN
     health_listed: bool | None = None  # the health domain resolved to a FakeIP
     exit_checked: bool = False
@@ -41,6 +42,8 @@ def assess(f: Facts) -> Verdict:
         return Verdict("warn", "tunnel down: listed domains cannot reach the internet")
     if f.exit_checked and f.exit_tunnel == f.exit_direct:
         return Verdict("leak", f"listed traffic exits directly via {f.exit_tunnel}")
+    if f.fail_closed is False:
+        return Verdict("warn", "not fail-closed: traffic is not blocked when the service stops")
     if None in (f.dns_intercepted, f.health_listed) or not f.exit_checked:
         return Verdict("warn", "checks still running")
     return Verdict("on", f"listed traffic exits via the VPN at {f.exit_tunnel}")

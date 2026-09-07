@@ -47,9 +47,19 @@ def service_state() -> str:
     return r.stdout.strip() or "unknown"
 
 
+def fail_closed() -> bool | None:
+    """True when systemd-resolved sends every query to sing-box, so DNS fails while it is down."""
+    try:
+        dns = subprocess.run(["resolvectl", "dns"], capture_output=True, text=True, check=True).stdout
+        domain = subprocess.run(["resolvectl", "domain"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return dns.startswith("Global: 127.0.0.1\n") and domain.startswith("Global: ~.\n")
+
+
 def collect(timeout: float = 8, exit_check: bool = True) -> probes.Facts:
     """The status facts for this machine."""
-    f = probes.Facts(service=service_state(), tun=TUN.exists())
+    f = probes.Facts(service=service_state(), tun=TUN.exists(), fail_closed=fail_closed())
     if f.service == "active":
         f.dns_intercepted = probes.dns_intercepted()
         f.health_listed = probes.health_listed()
