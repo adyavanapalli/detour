@@ -61,8 +61,10 @@ def status(target: str) -> int:
 
 
 def install(target: str) -> None:
-    if target != "linux":
-        raise ValueError(f"{target}: install is not implemented yet")
+    if target == "android":
+        from detour import android
+        android.install()
+        return
     from detour import linux, tray
     linux.install()
     if tray.available():
@@ -73,8 +75,10 @@ def install(target: str) -> None:
 
 
 def uninstall(target: str, purge: bool) -> None:
-    if target != "linux":
-        raise ValueError(f"{target}: uninstall is not implemented yet")
+    if target == "android":
+        from detour import android
+        android.uninstall(purge=purge)
+        return
     from detour import linux, tray
     tray.uninstall()
     linux.uninstall(purge=purge)

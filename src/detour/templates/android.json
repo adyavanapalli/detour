@@ -1,6 +1,7 @@
-// sing-box profile for an Android phone that runs sing-box for Android (SFA).
-// detour fills in the placeholders from the [android] table of its config file.
 {
+  // sing-box profile for an Android phone that runs sing-box for Android (SFA).
+  // detour fills in the placeholders from the [android] table of its config file.
+  // The brace comes first: SFA's import looks for it before it reads the JSON.
   "log": { "level": "warn", "timestamp": true },
   "dns": {
     "servers": [

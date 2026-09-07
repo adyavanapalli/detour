@@ -22,6 +22,15 @@ DUMP_FRESH = "VPNs:\n  0: null\n    mEventChanges (most recent first):\n"
 
 SYS_CLASS_NET = "aware_nmi0 dummy0 lo tun0 tunl0 wlan0 wwan0\n"
 
+DIALOG = ('<node index="0" text="Import Profile" class="android.widget.TextView" bounds="[100,100][900,200]" />'
+          '<node index="1" text="Import profile &quot;detour&quot;?" class="android.widget.TextView" bounds="[100,220][900,300]" />'
+          '<node index="2" text="Cancel" class="android.widget.Button" bounds="[1200,1500][1400,1600]" />'
+          '<node index="3" text="Import" class="android.widget.Button" bounds="[1450,1500][1650,1600]" />')
+ERROR = ('<node index="0" text="Error" class="android.widget.TextView" bounds="[100,100][900,200]" />'
+         '<node index="1" text="Failed to decode profile: invalid message" bounds="[100,220][900,300]" />'
+         '<node index="2" text="Copy" class="android.widget.Button" bounds="[1000,1500][1200,1600]" />'
+         '<node index="3" text="OK" class="android.widget.Button" bounds="[1450,1500][1650,1600]" />')
+
 
 class PingTest(unittest.TestCase):
     def test_answers(self):
@@ -58,6 +67,15 @@ class FailClosedTest(unittest.TestCase):
 
     def test_another_vpn_app(self):
         self.assertFalse(android.parse_fail_closed("com.example.vpn\n1\n", DUMP_ON))
+
+
+class ScreenTest(unittest.TestCase):
+    def test_texts_in_document_order(self):
+        self.assertEqual(android.texts(ERROR), ["Error", "Failed to decode profile: invalid message", "Copy", "OK"])
+
+    def test_exact_label_only(self):
+        self.assertEqual(android.bounds(DIALOG, "Import"), (1450, 1500, 1650, 1600))  # not "Import Profile"
+        self.assertIsNone(android.bounds(ERROR, "Import"))
 
 
 class TunTest(unittest.TestCase):
