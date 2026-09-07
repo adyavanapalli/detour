@@ -31,7 +31,8 @@ class Verdict:
 def assess(f: Facts) -> Verdict:
     """The one place that turns facts into a state. Every display uses it."""
     if f.service != "active":
-        return Verdict("off", f"service is {f.service}; DNS is closed while it is down")
+        blocked = "the system blocks traffic" if f.fail_closed else "nothing blocks traffic"
+        return Verdict("off", f"service is {f.service}; {blocked} while it is down")
     if not f.tun:
         return Verdict("warn", "tunnel interface is missing")
     if f.dns_intercepted is False:
@@ -57,13 +58,13 @@ def resolve(name: str) -> list[str] | None:
         return [] if e.errno == socket.EAI_NONAME else None
 
 
-def dns_intercepted() -> bool | None:
+def dns_intercepted(resolve=resolve) -> bool | None:
     """True when the canary returns NXDOMAIN, which only the sing-box rule does."""
     answers = resolve(CANARY_DOMAIN)
     return None if answers is None else answers == []
 
 
-def health_listed() -> bool | None:
+def health_listed(resolve=resolve) -> bool | None:
     """True when the health domain resolves to a FakeIP."""
     answers = resolve(HEALTH_DOMAIN)
     return None if not answers else any(a.startswith(FAKEIP_PREFIXES) for a in answers)

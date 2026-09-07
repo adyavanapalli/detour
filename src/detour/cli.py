@@ -1,5 +1,6 @@
 """The detour command: detour <target> <verb>."""
 import argparse
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -51,10 +52,7 @@ def config_import(target: str, path: str | None) -> None:
 
 
 def status(target: str) -> int:
-    if target != "linux":
-        raise ValueError(f"{target}: status is not implemented yet")
-    from detour import linux
-    facts = linux.collect()
+    facts = importlib.import_module(f"detour.{target}").collect()
     verdict = probes.assess(facts)
     print(f"{verdict.state}: {verdict.reason}")
     for name, value in vars(facts).items():

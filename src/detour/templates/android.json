@@ -1,0 +1,83 @@
+// sing-box profile for an Android phone that runs sing-box for Android (SFA).
+// detour fills in the placeholders from the [android] table of its config file.
+{
+  "log": { "level": "warn", "timestamp": true },
+  "dns": {
+    "servers": [
+      // the resolver of the current network, through Android's own DNS; fast, and it follows the phone
+      { "type": "local", "tag": "dns-direct" },
+      // listed domains get an address from this range; the real lookup happens later, inside the tunnel
+      { "type": "fakeip", "tag": "dns-fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" },
+      // the resolver inside the tunnel, used only for listed domains
+      { "type": "udp", "tag": "dns-vpn", "server": "__TUNNEL_DNS__", "detour": "wg" }
+    ],
+    "rules": [
+      // Firefox turns off its own DNS over HTTPS when this canary answers NXDOMAIN; status checks it too
+      { "domain": ["use-application-dns.net"], "action": "predefined", "rcode": "NXDOMAIN" },
+      // no HTTPS or SVCB records for listed domains: they could reveal real addresses
+      { "rule_set": ["vpn-domains"], "query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR" },
+      // the rule set carries package names as well as domain suffixes: a listed app's every lookup is caught here
+      { "rule_set": ["vpn-domains"], "query_type": ["A", "AAAA"], "action": "route", "server": "dns-fakeip" }
+    ],
+    "final": "dns-direct",
+    "reverse_mapping": false
+  },
+  "inbounds": [
+    // everything enters here, IPv6 included. With lockdown on, Android drops a packet that misses
+    // the tun rather than sending it direct, so the tun must own both default routes.
+    { "type": "tun", "tag": "tun-in",
+      "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "mtu": 1400,
+      "auto_route": true, "route_address": ["0.0.0.0/0", "::/0"],
+      // SFA advertises the next address, 172.19.0.2, as the system DNS server; every app's DNS enters the tun
+      "dns_mode": "hijack", "stack": "mixed" }
+  ],
+  "endpoints": [
+    { "type": "wireguard", "tag": "wg", "system": false, "mtu": 1400,
+      "address": ["__DEVICE_ADDRESS__"],
+      "private_key": "__DEVICE_PRIVATE_KEY__",
+      "peers": [
+        { "address": "__SERVER_HOST__", "port": __SERVER_PORT__,
+          "public_key": "__SERVER_PUBLIC_KEY__",
+          "allowed_ips": ["0.0.0.0/0"], "persistent_keepalive_interval": 25 }
+      ] }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct", "domain_resolver": "dns-direct" }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-direct",
+    "rule_set": [
+      { "type": "remote", "tag": "vpn-domains", "format": "source", "url": "__RULES_URL__",
+        "http_client": "direct-client", "update_interval": "5m" }
+    ],
+    // order is the policy: the first matching rule wins
+    "rules": [
+      // read the TLS or HTTP name of each connection so route rules and the dashboard can use it
+      { "action": "sniff" },
+      { "port": 53, "action": "hijack-dns" },
+      // a connection to a FakeIP carries its domain: resolve the real address through the tunnel
+      { "action": "resolve", "server": "dns-vpn" },
+      // still a FakeIP after resolving: refuse rather than leak
+      { "ip_cidr": ["198.18.0.0/15", "fc00::/18"], "action": "reject" },
+      // the tunnel carries IPv4 only: refuse IPv6 to listed apps and domains rather than send it direct
+      { "ip_version": 6, "rule_set": ["vpn-domains"], "action": "reject" },
+      { "rule_set": ["vpn-domains"], "action": "route", "outbound": "wg" },
+      // DNS over TLS would bypass the split
+      { "port": 853, "action": "reject" },
+      // a connection that Android cannot attribute to an app is refused rather than sent direct
+      { "package_name_regex": [".+"], "invert": true, "action": "reject" }
+    ],
+    "final": "direct"
+  },
+  "services": [
+    // the API and dashboard listen on the phone only; the desktop reaches them through adb forward
+    { "type": "api", "tag": "api", "listen": "127.0.0.1", "listen_port": 9090,
+      "secret": "__API_SECRET__",
+      "access_control_allow_origin": ["http://127.0.0.1:9091", "http://localhost:9091"],
+      "dashboard": { "enabled": true, "http_client": "direct-client" } }
+  ],
+  "experimental": { "cache_file": { "enabled": true, "store_fakeip": true } },
+  // rule-set and dashboard downloads never go through the tunnel
+  "http_clients": [ { "tag": "direct-client", "detour": "direct" } ]
+}
