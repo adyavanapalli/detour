@@ -22,11 +22,15 @@
     "reverse_mapping": false
   },
   "inbounds": [
-    // all traffic enters here; auto_route points the default route at this interface
+    // all IPv4 traffic enters here; auto_route points the IPv4 default route at this interface.
+    // IPv6 is different: only the FakeIP range comes in, so IPv6 to a listed domain is still
+    // refused rather than leaked, and real IPv6 goes direct when the network has it. A ::/0
+    // route here would make the host believe that it has IPv6 on an IPv4-only network, and
+    // every IPv6 connection would then die inside the tun (Tailscale relays were one victim).
     { "type": "tun", "tag": "tun-in", "interface_name": "sbtun0",
       "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "mtu": 1420,
       "auto_route": true, "strict_route": false,
-      "route_address": ["0.0.0.0/0", "::/0"], "stack": "mixed" },
+      "route_address": ["0.0.0.0/0", "fc00::/18"], "stack": "mixed" },
     // systemd-resolved sends every query here (the install adds a resolved drop-in)
     { "type": "direct", "tag": "dns-in", "listen": "127.0.0.1", "listen_port": 53 }
   ],
