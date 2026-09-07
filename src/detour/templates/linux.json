@@ -56,6 +56,8 @@
     ],
     // order is the policy: the first matching rule wins
     "rules": [
+      // read the TLS or HTTP name of each connection so route rules and the dashboard can use it
+      { "action": "sniff" },
       { "inbound": ["dns-in"], "action": "hijack-dns" },
       { "port": 53, "action": "hijack-dns" },
       // a connection to a FakeIP carries its domain: resolve the real address through the tunnel
