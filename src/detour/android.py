@@ -46,8 +46,8 @@ def adb(*args: str, check: bool = True, quiet: bool = True) -> str:
         print("+ adb", " ".join(args))
     for attempt in (1, 2):
         r = subprocess.run([adb_path(), *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)  # keep stdin for prompts
-        gone = "no devices/emulators found" in r.stderr or "device offline" in r.stderr or "not found" in r.stderr
-        if r.returncode and gone and attempt == 1:  # a USB link can drop for a few seconds; wait for it once
+        gone = not r.stderr.strip() or any(s in r.stderr for s in ("no devices/emulators found", "device offline", "not found"))
+        if r.returncode and gone and attempt == 1:  # a USB link can drop for a few seconds, sometimes without a message
             subprocess.run([adb_path(), "wait-for-device"], stdin=subprocess.DEVNULL, timeout=60, check=False)
             continue
         break
@@ -182,139 +182,108 @@ def install_apk(apk: str, replace: bool) -> None:
             os.unlink(own)
 
 
-def screen() -> str:
-    """The current screen as uiautomator XML."""
-    return shell("uiautomator dump /sdcard/detour-ui.xml >/dev/null && cat /sdcard/detour-ui.xml; rm -f /sdcard/detour-ui.xml")
+def ui():
+    """SFA's screen, through uiautomator2. The phone runs its small UiAutomator service only while we drive it.
 
-
-TEXT_ATTR = r""" text=(?:"([^"]*)"|'([^']*)')"""  # uiautomator switches to single quotes when the text has double quotes
+    Never ask it for display metrics or screenshots: on Android 16 and later those calls fail from a bare
+    app_process program (ApplicationSharedMemory). Finding, waiting, clicking, and scrolling all work.
+    """
+    try:
+        import uiautomator2
+    except ImportError as e:
+        raise OSError("the Android target needs uiautomator2: install detour with the [android] extra") from e
+    return uiautomator2.connect(os.environ.get("ANDROID_SERIAL"))
 
 
 def texts(xml: str) -> list[str]:
-    """Every non-empty text on the screen, in document order."""
-    return [a or b for a, b in re.findall(TEXT_ATTR, xml) if a or b]
+    """Every non-empty text in a screen hierarchy, in document order."""
+    return [a or b for a, b in re.findall(r""" text=(?:"([^"]*)"|'([^']*)')""", xml) if a or b]
 
 
-def bounds(xml: str, label: str, attr: str = "text") -> tuple[int, int, int, int] | None:
-    """The box of the control whose attr (text, or content-desc for icons) is exactly label, if the screen has one."""
-    quoted = f'"{re.escape(label)}"|' + f"'{re.escape(label)}'"
-    node = re.search(rf' {attr}=(?:{quoted})[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)
-    return tuple(map(int, node.groups())) if node else None
+def launch(d) -> None:
+    """Open SFA. On its first launch it asks about update checks; answer OK before anything else."""
+    shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)  # the first launch also creates the working directory
+    if d(text="Check Update").wait(timeout=4):
+        d(text="OK").click()
+        time.sleep(1)
 
 
-def tap(xml: str, label: str, attr: str = "text") -> bool:
-    box = bounds(xml, label, attr)
-    if not box:
-        return False
-    x1, y1, x2, y2 = box
-    shell(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}", quiet=False)
-    return True
+def confirm_import(d) -> None:
+    """Answer SFA's import dialog. An error dialog instead means SFA refused the profile."""
+    for _ in range(20):
+        if d(text="Error").exists:
+            shown = texts(d.dump_hierarchy())
+            message = shown[shown.index("Error") + 1] if "Error" in shown else "see the phone"
+            d(text="OK").click()
+            raise OSError(f"SFA refused the profile: {message}")
+        if d(text="Import").exists:
+            d(text="Import").click()
+            return
+        if d(text="Check Update").exists:  # the one-time prompt, if it arrives late
+            d(text="OK").click()
+        time.sleep(0.5)
+    raise OSError("SFA did not show its import dialog")
 
 
-def delete_older_profiles() -> None:
+def delete_older_profiles(d) -> None:
     """After an import, remove the earlier profiles with the same name; the newest one, last in the list, is selected."""
-    if not tap(screen(), "Expand", "content-desc"):  # opens the profile list sheet on the dashboard
+    if not d(description="Expand").exists:  # opens the profile list sheet on the dashboard
         return
-    time.sleep(2)
-    for _ in range(10):
-        xml = screen()
-        rows = list(re.finditer(rf' text="{PROFILE}"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml))
-        if len(rows) < 2:
-            break
-        y = (int(rows[0].group(2)) + int(rows[0].group(4))) // 2  # the oldest sits first
-        menus = [tuple(map(int, m.groups())) for m in re.finditer(r'content-desc="More options"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)]
-        near = [b for b in menus if abs((b[1] + b[3]) // 2 - y) < 80]
-        if not near:
-            break
-        x1, y1, x2, y2 = near[0]
-        shell(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}", quiet=False)
-        time.sleep(2)
-        if not tap(screen(), "Delete"):
-            break
-        time.sleep(2)
-    shell("input keyevent BACK")  # close the sheet
+    d(description="Expand").click()
+    time.sleep(1)
+    while d(text=PROFILE).count > 1:
+        d(text=PROFILE)[0].right(description="More options").click()  # the oldest sits first
+        d(text="Delete").click(timeout=5)
+        time.sleep(1)
+    d.press("back")  # close the sheet
     time.sleep(1)
 
 
-def confirm_import(screen=screen, tap=tap) -> None:
-    """Answer SFA's dialogs: OK to its one-time update prompt, Import to the profile. An error dialog means refusal."""
-    imported_at = None
-    for tick in range(15):
-        xml = screen()
-        shown = texts(xml)
-        if "Error" in shown:
-            tap(xml, "OK")
-            raise OSError("SFA refused the profile: " + shown[shown.index("Error") + 1])
-        if "Check Update" in shown:  # first launch only: yes to update checks from GitHub
-            tap(xml, "OK")
-        elif imported_at is None and tap(xml, "Import"):
-            imported_at = tick
-        elif imported_at is not None and tick - imported_at >= 3:  # the update prompt can follow the import
-            return
-        time.sleep(1)
-    if imported_at is None:
-        input(f"On the phone, tap Import to import profile {PROFILE}, then press Enter here: ")
-
-
-def switches(xml: str) -> dict[str, tuple[bool, tuple[int, int, int, int]]]:
-    """Every switch on the screen, keyed by the text that precedes it: {text: (on, bounds)}."""
-    found, last = {}, ""
-    for node in re.findall(r"<node ([^>]*)/?>", xml):
-        attrs = {k: (a or b) for k, a, b in re.findall(r"""([\w-]+)=(?:"([^"]*)"|'([^']*)')""", node)}
-        if attrs.get("text"):
-            last = attrs["text"]
-        if attrs.get("checkable") == "true":
-            found[last] = (attrs.get("checked") == "true", tuple(map(int, re.findall(r"\d+", attrs["bounds"]))))
-    return found
-
-
-UPDATE_SWITCHES = (  # the text SFA shows right before each switch on Settings > App
+UPDATE_SWITCHES = (  # the text on each row of Settings > App whose switch must be on
     "Automatic Update Check",
     "Install updates without interaction",  # Silent Install
     "Automatically download and install updates in background",  # Auto Update
 )
 
 
-def enable_updates() -> None:
+def enable_updates(d) -> None:
     """Turn on SFA's own update checks, silent installs, and automatic updates on its App settings page."""
-    for label in ("Settings", "App"):
-        if not tap(screen(), label):
-            raise OSError(f"SFA's {label} page was not found on screen")
-        time.sleep(2)
-    for wanted in UPDATE_SWITCHES:
-        for _ in range(4):  # the switches sit below the fold; a tap can also shift the ones after it
-            found = switches(screen())
-            if wanted in found:
-                break
-            shell("input swipe 540 1800 540 600 300")
-            time.sleep(1.5)
-        else:
-            raise OSError(f"the switch after {wanted!r} was not found on SFA's App page")
-        on, (x1, y1, x2, y2) = found[wanted]
-        if not on:
-            shell(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}", quiet=False)
-            time.sleep(2)
-    shell("input keyevent BACK; input keyevent BACK")  # back to the dashboard
+    d(text="Settings").click(timeout=5)
+    d(text="App").click(timeout=5)
+    for _ in range(2):  # the second pass checks the result
+        for row in UPDATE_SWITCHES:
+            d(scrollable=True).scroll.to(text=row)
+            switch = d(text=row).right(checkable=True)
+            if not switch.info["checked"]:
+                print(f"+ switch on: {row}")
+                switch.click()
+                time.sleep(1)
+    for row in UPDATE_SWITCHES:
+        d(scrollable=True).scroll.to(text=row)
+        if not d(text=row).right(checkable=True).info["checked"]:
+            raise OSError(f"SFA's switch for {row!r} would not turn on")
+    d.press("back")
+    d.press("back")  # back to the dashboard
+    time.sleep(1)
 
 
-def import_profile(text: str) -> None:
+def import_profile(d, text: str) -> None:
     """Hand the profile to SFA the way a file manager would; SFA checks it, saves it, and selects it."""
-    shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)  # first run creates the working directory
-    time.sleep(2)
+    launch(d)
     remote = f"{FILES_DIR}/{PROFILE}.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         f.write(text)
     try:
         adb("push", f.name, remote, quiet=False)
         shell(f"am start -a android.intent.action.VIEW -d file://{remote} -n {MAIN_ACTIVITY}", quiet=False)
-        confirm_import()
+        confirm_import(d)
         time.sleep(2)  # SFA reads the file again after the confirmation
     finally:
         os.unlink(f.name)
         shell(f"rm -f {remote}", quiet=False)  # the copy in SFA's private storage is the one that runs
-    shell("input keyevent BACK")  # SFA opens the profile editor after an import; the dashboard is behind it
+    d.press("back")  # SFA opens the profile editor after an import; the dashboard is behind it
     time.sleep(1)
-    delete_older_profiles()
+    delete_older_profiles(d)
 
 
 def grant_permissions() -> None:
@@ -327,27 +296,26 @@ def grant_permissions() -> None:
     shell(f"appops set {PACKAGE} ACCESS_LOCAL_NETWORK allow", check=False, quiet=False)
 
 
-def restart_service() -> None:
+def restart_service(d) -> None:
     """Stop the service if it runs, then start it, through SFA's own dashboard buttons; the selected profile loads."""
     shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)
-    time.sleep(2)
-    if tap(screen(), "Stop", "content-desc"):
+    d(text="Dashboard").wait(timeout=10)
+    if d(description="Stop").exists:
+        d(description="Stop").click()
         if not wait_for(lambda: not tun_present(), 30):
             raise OSError("SFA did not stop within 30 seconds")
         time.sleep(1)
-    if not tap(screen(), "Start", "content-desc"):
-        raise OSError("SFA's Start button was not found on its dashboard")
-    for _ in range(30):  # the grants above make prompts unlikely; answer them if they appear anyway
-        xml = screen()
-        shown = texts(xml)
-        if "Connection request" in shown:
-            tap(xml, "OK")
-        elif "Allow" in shown:
-            tap(xml, "Allow" if "notifications" in " ".join(shown) else "Don’t allow")
-        elif tun_present():
-            return
-        time.sleep(1)
-    raise OSError("the VPN did not start within 30 seconds")
+    # the grants above make prompts unlikely; if one appears anyway, answer it the moment it shows
+    d.watcher("consent").when("Connection request").when("OK").click()
+    d.watcher("notifications").when("Allow sing-box to send you notifications?").when("Allow").click()
+    d.watcher.start(0.5)
+    try:
+        d(description="Start").click(timeout=10)
+        if not wait_for(tun_present, 30):
+            raise OSError("the VPN did not start within 30 seconds")
+    finally:
+        d.watcher.stop()
+        d.watcher.remove()
 
 
 def verify_tunnel() -> probes.Facts:
@@ -377,13 +345,14 @@ def install() -> None:
     try:
         if service_state() == "not installed":
             install_apk(apk, replace=False)
-        import_profile(text)
+        d = ui()
+        import_profile(d, text)
         grant_permissions()
         shell("settings put global private_dns_mode off", quiet=False)  # DNS over TLS would leave the split
         shell(f"dumpsys deviceidle whitelist +{PACKAGE}", quiet=False)  # no battery limits on the VPN
         adb("forward", f"tcp:{DASHBOARD_PORT}", "tcp:9090", quiet=False)
-        enable_updates()
-        restart_service()
+        enable_updates(d)
+        restart_service(d)
         verify_tunnel()
         print("the tunnel works")
         if not fail_closed():
@@ -395,6 +364,7 @@ def install() -> None:
                 print("Until the next reboot, traffic is not blocked while the VPN is down.")
     finally:
         os.unlink(apk)
+        shell("rm -rf /data/local/tmp/u2 /data/local/tmp/u2.jar", check=False)  # uiautomator2's service files
     print(f"installed. Check it with: detour android status\ndashboard: http://127.0.0.1:{DASHBOARD_PORT}/dashboard/")
 
 

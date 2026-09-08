@@ -7,6 +7,10 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+# the Android target drives SFA's screen through uiautomator2 (Google's UiAutomator, wrapped for Python)
+android = ["uiautomator2>=3.7"]
+
 [project.scripts]
 detour = "detour.cli:main"
 

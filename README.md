@@ -19,6 +19,7 @@ Listed domains take a detour through the tunnel. Everything else goes straight t
 - Python 3.11 or newer, and uv.
 - For the top-bar indicator: GNOME with the Ubuntu AppIndicator extension, plus the packages `python3-gi` and `gir1.2-ayatanaappindicator3-0.1`.
 - For a phone: Android 12 or newer with USB debugging on, and `adb` on this machine, on PATH or under `ANDROID_HOME`. If `sing-box` is installed here too, the profile is checked before it goes to the phone.
+- The Android target drives SFA's screen with [uiautomator2](https://github.com/openatx/uiautomator2), the `android` extra of the package; `install.sh` includes it. During an install it runs a small UiAutomator service on the phone under the shell user, and removes it afterwards.
 
 ## Install detour
 
@@ -66,14 +67,14 @@ The phone runs sing-box for Android (SFA). detour talks to it over ADB and never
 `detour android install` does these things, and prints each adb command as it runs:
 
 - Installs SFA from the latest sing-box release if the phone does not have it.
-- Renders the profile and hands it to SFA as a file. SFA asks "Import profile detour?" and the tool answers. It also answers SFA's one-time "Check Update" prompt with OK, and deletes older profiles with the same name.
+- Renders the profile and hands it to SFA as a file. SFA asks "Import profile detour?" and the tool answers. It answers SFA's one-time "Check Update" prompt with OK first, and deletes older profiles with the same name.
 - Grants what SFA would otherwise ask for: notifications, the VPN consent, local network access (Android 16 and later), and installs from SFA for its own updates. No prompt appears.
 - Turns Private DNS off, so DNS over TLS cannot leave the split. Exempts SFA from battery limits.
 - Turns on Silent Install and Auto Update on SFA's App settings page.
 - Starts the service through SFA's Start button, then proves the tunnel: a listed domain must exit somewhere else than an unlisted one. If it does not, the tool stops there and nothing is locked down.
 - If always-on VPN with lockdown is not in effect yet, saves both settings and offers a reboot. Android applies them at boot. Unlock the phone after the reboot. The VPN starts after the unlock.
 
-The order matters: the phone is never locked down before the tunnel is proven to work. If the phone drops off USB for a moment, the tool waits for it and retries once.
+The order matters: the phone is never locked down before the tunnel is proven to work. If the phone drops off USB for a moment, the tool waits for it and retries once. A link that drops every minute is a cable problem; the kernel log shows it as `USB disconnect` with `error -71`.
 
 ## Config keys
 

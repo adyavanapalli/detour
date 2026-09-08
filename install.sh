@@ -21,7 +21,7 @@ trap 'rm -rf "$work"' EXIT
 git clone --quiet --depth 1 "$REPO" "$work/detour"
 
 uv venv --quiet --clear --system-site-packages --python /usr/bin/python3 "$VENV"
-uv pip install --quiet --python "$VENV/bin/python" "$work/detour"
+uv pip install --quiet --python "$VENV/bin/python" "$work/detour[android]"
 mkdir -p "$BIN"
 ln -sf "$VENV/bin/detour" "$BIN/detour"
 

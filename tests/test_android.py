@@ -30,16 +30,6 @@ CHECK_UPDATE = ('<node index="0" text="Check Update" class="android.widget.TextV
 EDIT_PROFILE = ('<node index="0" text="Edit Profile" class="android.widget.TextView" bounds="[100,100][900,200]" />'
                 '<node index="1" text="detour" class="android.widget.EditText" bounds="[100,300][900,400]" />')
 
-DIALOG = ('<node index="0" text="Import Profile" class="android.widget.TextView" bounds="[100,100][900,200]" />'
-          '<node index="1" text=\'Import profile "detour"?\' class="android.widget.TextView" bounds="[100,220][900,300]" />'
-          '<node index="2" text="Cancel" class="android.widget.Button" bounds="[1200,1500][1400,1600]" />'
-          '<node index="3" text="Import" class="android.widget.Button" bounds="[1450,1500][1650,1600]" />')
-ERROR = ('<node index="0" text="Error" class="android.widget.TextView" bounds="[100,100][900,200]" />'
-         '<node index="1" text="Failed to decode profile: invalid message" bounds="[100,220][900,300]" />'
-         '<node index="2" text="Copy" class="android.widget.Button" bounds="[1000,1500][1200,1600]" />'
-         '<node index="3" text="OK" class="android.widget.Button" bounds="[1450,1500][1650,1600]" />')
-
-
 class PingTest(unittest.TestCase):
     def test_answers(self):
         self.assertEqual(android.parse_ping(PING_FAKEIP), ["198.18.0.2"])
@@ -77,56 +67,95 @@ class FailClosedTest(unittest.TestCase):
         self.assertFalse(android.parse_fail_closed("com.example.vpn\n1\n", DUMP_ON))
 
 
-class ScreenTest(unittest.TestCase):
-    def test_texts_in_document_order(self):
-        self.assertEqual(android.texts(ERROR), ["Error", "Failed to decode profile: invalid message", "Copy", "OK"])
+ERROR_DIALOG = ["Error", "Failed to decode profile: invalid message", "Copy", "OK"]
+IMPORT_DIALOG = ["Import Profile", 'Import profile "detour"?', "Cancel", "Import"]
 
-    def test_single_quoted_text_is_read_too(self):
-        self.assertEqual(android.texts(DIALOG), ["Import Profile", 'Import profile "detour"?', "Cancel", "Import"])
 
-    def test_exact_label_only(self):
-        self.assertEqual(android.bounds(DIALOG, "Import"), (1450, 1500, 1650, 1600))  # not "Import Profile"
-        self.assertIsNone(android.bounds(ERROR, "Import"))
+class FakeSelector:
+    """What d(text=...) or d(description=...) returns on the fake device."""
+    def __init__(self, dev, kind, value):
+        self.dev, self.kind, self.value = dev, kind, value
+
+    @property
+    def exists(self):
+        return self.value in self.dev.screen()
+
+    def wait(self, timeout=0):
+        return self.exists
+
+    def click(self, timeout=None):
+        if self.kind == "switch":
+            self.dev.switches[self.value] = not self.dev.switches[self.value]
+        elif not self.exists:
+            raise LookupError(self.value)
+        self.dev.clicks.append(self.value)
+        self.dev.advance()
+
+    def right(self, **selector):
+        return FakeSelector(self.dev, "switch", self.value)
+
+    @property
+    def info(self):
+        return {"checked": self.dev.switches[self.value]}
+
+    class scroll:
+        @staticmethod
+        def to(**selector):
+            return True
+
+
+class FakeDevice:
+    """Screens are lists of visible texts; a click moves to the next screen."""
+    def __init__(self, screens, switches=None):
+        self.screens, self.switches, self.clicks, self.presses = list(screens), dict(switches or {}), [], []
+
+    def __call__(self, **selector):
+        (kind, value), = selector.items()
+        return FakeSelector(self, kind, value)
+
+    def screen(self):
+        return self.screens[0] if self.screens else []
+
+    def advance(self):
+        if len(self.screens) > 1:
+            self.screens.pop(0)
+
+    def dump_hierarchy(self):
+        return "".join(f'<node text="{t}" />' for t in self.screen())
+
+    def press(self, key):
+        self.presses.append(key)
 
 
 class ConfirmImportTest(unittest.TestCase):
-    def replay(self, screens):
-        """Run confirm_import against a sequence of screens; return the labels it tapped."""
-        taps, shown = [], iter(screens)
-
-        def tap(xml, label):
-            if android.bounds(xml, label):
-                taps.append(label)
-                return True
-            return False
+    def test_import_is_confirmed(self):
+        d = FakeDevice([IMPORT_DIALOG, ["Edit Profile"]])
         with patch("detour.android.time.sleep"):
-            android.confirm_import(screen=lambda: next(shown), tap=tap)
-        return taps
+            android.confirm_import(d)
+        self.assertEqual(d.clicks, ["Import"])
 
-    def test_first_launch_prompt_before_and_after_the_import(self):
-        screens = [CHECK_UPDATE, DIALOG, EDIT_PROFILE, CHECK_UPDATE] + [EDIT_PROFILE] * 6
-        self.assertEqual(self.replay(screens), ["OK", "Import", "OK"])
-
-    def test_plain_import(self):
-        self.assertEqual(self.replay([DIALOG] + [EDIT_PROFILE] * 6), ["Import"])
+    def test_late_update_prompt_is_answered_first(self):
+        d = FakeDevice([["Check Update", "No, thanks", "OK"], IMPORT_DIALOG, ["Edit Profile"]])
+        with patch("detour.android.time.sleep"):
+            android.confirm_import(d)
+        self.assertEqual(d.clicks, ["OK", "Import"])
 
     def test_error_dialog_raises_with_its_message(self):
-        with self.assertRaisesRegex(OSError, "Failed to decode profile: invalid message"):
-            self.replay([ERROR] * 3)
+        d = FakeDevice([ERROR_DIALOG])
+        with patch("detour.android.time.sleep"), self.assertRaisesRegex(OSError, "Failed to decode profile: invalid message"):
+            android.confirm_import(d)
+        self.assertEqual(d.clicks, ["OK"])
 
 
-APP_PAGE = ('<node text="Automatic Update Check" class="android.widget.TextView" bounds="[78,1300][700,1400]" />'
-            '<node text="" checkable="true" checked="true" class="android.view.View" bounds="[875,1295][1002,1412]" />'
-            '<node text="Silent Install" class="android.widget.TextView" bounds="[78,1470][700,1520]" />'
-            '<node text="Install updates without interaction" class="android.widget.TextView" bounds="[78,1530][700,1580]" />'
-            '<node text="" checkable="true" checked="false" class="android.view.View" bounds="[875,1461][1002,1578]" />')
-
-
-class SwitchesTest(unittest.TestCase):
-    def test_switch_state_and_box_by_preceding_text(self):
-        found = android.switches(APP_PAGE)
-        self.assertEqual(found["Automatic Update Check"], (True, (875, 1295, 1002, 1412)))
-        self.assertEqual(found["Install updates without interaction"], (False, (875, 1461, 1002, 1578)))
+class EnableUpdatesTest(unittest.TestCase):
+    def test_only_the_off_switches_are_clicked(self):
+        page = ["Settings", "App", *android.UPDATE_SWITCHES]
+        d = FakeDevice([page], {android.UPDATE_SWITCHES[0]: True, android.UPDATE_SWITCHES[1]: False, android.UPDATE_SWITCHES[2]: False})
+        with patch("detour.android.time.sleep"):
+            android.enable_updates(d)
+        self.assertEqual(d.clicks, ["Settings", "App", android.UPDATE_SWITCHES[1], android.UPDATE_SWITCHES[2]])
+        self.assertTrue(all(d.switches.values()))
+        self.assertEqual(d.presses, ["back", "back"])
 
 
 class TunTest(unittest.TestCase):
