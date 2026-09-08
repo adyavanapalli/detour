@@ -18,7 +18,7 @@ Listed domains take a detour through the tunnel. Everything else goes straight t
 - Ubuntu with systemd-resolved. Other systemd distributions are untested.
 - Python 3.11 or newer, and uv.
 - For the top-bar indicator: GNOME with the Ubuntu AppIndicator extension, plus the packages `python3-gi` and `gir1.2-ayatanaappindicator3-0.1`.
-- For a phone: Android 12 or newer with USB debugging on, and `adb` on this machine, on PATH or under `ANDROID_HOME`. The profile is checked with `sing-box` on this machine before it goes to the phone; `detour linux install` provides it.
+- For a phone: Android 12 or newer with USB debugging on, and `adb` on this machine, on PATH or under `ANDROID_HOME`. If `sing-box` is installed here too, the profile is checked before it goes to the phone.
 
 ## Install detour
 
@@ -65,13 +65,15 @@ The phone runs sing-box for Android (SFA). detour talks to it over ADB and never
 
 `detour android install` does these things, and prints each adb command as it runs:
 
-- Installs SFA from the sing-box release if the phone does not have it.
-- Renders the profile, checks it with `sing-box check`, and hands it to SFA as a file. SFA asks "Import profile detour?" and the tool answers for you. If it cannot find the button, it asks you to tap Import.
+- Installs SFA from the latest sing-box release if the phone does not have it.
+- Renders the profile and hands it to SFA as a file. SFA asks "Import profile detour?" and the tool answers. It also answers SFA's one-time "Check Update" prompt with OK, and deletes older profiles with the same name.
+- Grants what SFA would otherwise ask for: notifications, the VPN consent, local network access (Android 16 and later), and installs from SFA for its own updates. No prompt appears.
 - Turns Private DNS off, so DNS over TLS cannot leave the split. Exempts SFA from battery limits.
-- If always-on VPN with lockdown is already in effect, restarts the service through SFA's Quick Settings tile. The new profile loads on start.
-- If it is not, saves both settings and offers a reboot. Android applies them at boot and grants the VPN consent then, so no dialog appears. Unlock the phone after the reboot. The VPN starts after the unlock.
+- Turns on Silent Install and Auto Update on SFA's App settings page.
+- Starts the service through SFA's Start button, then proves the tunnel: a listed domain must exit somewhere else than an unlisted one. If it does not, the tool stops there and nothing is locked down.
+- If always-on VPN with lockdown is not in effect yet, saves both settings and offers a reboot. Android applies them at boot. Unlock the phone after the reboot. The VPN starts after the unlock.
 
-Each install adds a profile named `detour` in SFA and selects it. Delete older ones on SFA's Profiles page when you like.
+The order matters: the phone is never locked down before the tunnel is proven to work. If the phone drops off USB for a moment, the tool waits for it and retries once.
 
 ## Config keys
 
