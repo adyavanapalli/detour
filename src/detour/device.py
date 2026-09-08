@@ -1,5 +1,7 @@
 """What every target shares: the device identity, the template values, and the rendered config."""
+import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -40,6 +42,10 @@ def template(target: str) -> str:
 def rendered_config(target: str, table: dict) -> str:
     """The sing-box config for the target, checked by sing-box on this machine when it is installed."""
     text = render.render(template(target), values(table))
+    if target == "android":
+        no_comments = re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE)
+        json.loads(no_comments)
+        return text
     if not shutil.which("sing-box"):
         print("sing-box is not installed here, so the profile is not checked before it goes to the target")
         return text

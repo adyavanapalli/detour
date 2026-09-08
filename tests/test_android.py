@@ -73,8 +73,13 @@ IMPORT_DIALOG = ["Import Profile", 'Import profile "detour"?', "Cancel", "Import
 
 
 class FakeElement:
-    def __init__(self, text, checked=None):
+    def __init__(self, text, checked=None, query=None):
         self.text, self.attrib = text, {"content-desc": "", **({"checked": "true" if checked else "false"} if checked is not None else {})}
+        self.query = query
+
+    def click(self):
+        if self.query:
+            self.query.click()
 
 
 class FakeQuery:
@@ -84,8 +89,8 @@ class FakeQuery:
 
     def all(self):
         if self.row is not None:
-            return [FakeElement("", self.dev.switches[self.row])]
-        return [FakeElement(t) for t in self.dev.screen() if t in self.labels]
+            return [FakeElement("", self.dev.switches[self.row], query=self)]
+        return [FakeElement(t, query=self) for t in self.dev.screen() if t in self.labels]
 
     @property
     def exists(self):
@@ -94,7 +99,7 @@ class FakeQuery:
     def wait(self, timeout=None):
         return self.exists
 
-    def get(self):
+    def get(self, timeout=None):
         return self.all()[0]
 
     def click(self):
@@ -154,12 +159,13 @@ class ConfirmImportTest(unittest.TestCase):
 class EnableUpdatesTest(unittest.TestCase):
     def test_only_the_off_switches_are_clicked(self):
         page = ["Settings", "App", "Update Settings", "Dashboard", *android.UPDATE_SWITCHES]
-        d = FakeDevice([page], {android.UPDATE_SWITCHES[0]: True, android.UPDATE_SWITCHES[1]: False, android.UPDATE_SWITCHES[2]: False})
-        with patch("detour.android.time.sleep"):
+        d = FakeDevice([page], {android.UPDATE_SWITCHES[0]: False, android.UPDATE_SWITCHES[1]: True})
+        with patch("detour.android.time.sleep"), patch("detour.android.shell") as mock_sh:
             android.enable_updates(d)
-        self.assertEqual(d.clicks, ["Settings", "App", android.UPDATE_SWITCHES[1], android.UPDATE_SWITCHES[2]])
+        self.assertEqual(d.clicks, ["Settings", "App", android.UPDATE_SWITCHES[0]])
         self.assertTrue(all(d.switches.values()))
-        self.assertEqual(d.presses, ["back", "back"])
+        mock_sh.assert_any_call("input swipe 500 1700 500 900 50")
+        mock_sh.assert_any_call(f"am start -S -n {android.MAIN_ACTIVITY}", quiet=False)
 
 
 class TunTest(unittest.TestCase):

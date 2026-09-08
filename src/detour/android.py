@@ -1,5 +1,4 @@
 """Android target: sing-box for Android (SFA) on a phone reached over ADB."""
-import json
 import os
 import re
 import shutil
@@ -8,6 +7,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,10 +16,9 @@ from detour import device, probes
 PACKAGE = "io.nekohasekai.sfa"
 VPN_SERVICE = f"{PACKAGE}/.bg.VPNService"
 MAIN_ACTIVITY = f"{PACKAGE}/.compose.MainActivity"
-FILES_DIR = f"/sdcard/Android/data/{PACKAGE}/files"  # SFA's working directory: the shell may write here, other apps may not
+FILES_DIR = f"/sdcard/Android/data/{PACKAGE}/files"  # SFA's working directory
 PROFILE = "detour"  # SFA names the imported profile after the file
-RELEASES = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-DASHBOARD_PORT = 9091  # on the desktop, forwarded to the phone's 9090
+RELEASES = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.14.0"
 DIRECT_HOST = urlparse(probes.DIRECT_URL).hostname
 
 PING_ANSWER = re.compile(r"^PING \S+ \(([\d.]+)\)")
@@ -46,9 +45,9 @@ def adb(*args: str, check: bool = True, quiet: bool = True) -> str:
     if not quiet:
         print("+ adb", " ".join(args))
     for attempt in (1, 2):
-        r = subprocess.run([adb_path(), *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)  # keep stdin for prompts
-        gone = not r.stderr.strip() or any(s in r.stderr for s in ("no devices/emulators found", "device offline", "not found"))
-        if r.returncode and gone and attempt == 1:  # a USB link can drop for a few seconds, sometimes without a message
+        r = subprocess.run([adb_path(), *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        gone = any(s in r.stderr for s in ("no devices/emulators found", "device offline", "device not found", "error: closed"))
+        if r.returncode and gone and attempt == 1:
             subprocess.run([adb_path(), "wait-for-device"], stdin=subprocess.DEVNULL, timeout=60, check=False)
             continue
         break
@@ -72,7 +71,7 @@ def parse_ping(output: str) -> list[str] | None:
 
 def resolve(name: str) -> list[str] | None:
     """Resolve on the phone, through the same path every app uses. ping is the only resolver the shell has."""
-    return parse_ping(shell(f"ping -c1 -W1 {name} 2>&1", check=False))  # unknown host is reported on stderr
+    return parse_ping(shell(f"ping -c1 -W1 {name} 2>&1", check=False))
 
 
 def parse_body(output: str) -> str | None:
@@ -88,11 +87,7 @@ def fetch_ip(host: str) -> str | None:
 
 
 def parse_fail_closed(keys: str, dump: str) -> bool:
-    """True when always-on lockdown for SFA is both saved in settings and in effect.
-
-    keys is the output of the two settings reads; dump is dumpsys vpn_management, whose event list
-    is newest first, so the first mode change is the state in effect.
-    """
+    """True when always-on lockdown for SFA is both saved in settings and in effect."""
     if keys.split() != [PACKAGE, "1"]:
         return False
     mode = MODE_CHANGE.search(dump)
@@ -105,24 +100,31 @@ def fail_closed() -> bool:
 
 
 def service_state() -> str:
-    if PACKAGE not in shell(f"pm list packages {PACKAGE}"):  # an adb failure raises instead of reading as absent
+    if PACKAGE not in shell(f"pm list packages {PACKAGE}"):
         return "not installed"
     return "active" if "startRequested=true" in shell(f"dumpsys activity services {VPN_SERVICE}") else "inactive"
 
 
 def collect(exit_check: bool = True) -> probes.Facts:
-    """The status facts for the phone."""
+    """The status facts for the phone, collected in parallel."""
     f = probes.Facts(service=service_state())
     if f.service == "not installed":
         return f
     f.tun = tun_present()
     f.fail_closed = fail_closed()
     if f.service == "active":
-        f.dns_intercepted = probes.dns_intercepted(resolve)
-        f.health_listed = probes.health_listed(resolve)
-        if f.health_listed and exit_check:
-            f.exit_tunnel, f.exit_direct = fetch_ip(probes.HEALTH_DOMAIN), fetch_ip(DIRECT_HOST)
-            f.exit_checked = True
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            fut_dns = ex.submit(probes.dns_intercepted, resolve)
+            fut_health = ex.submit(probes.health_listed, resolve)
+            fut_tunnel = ex.submit(fetch_ip, probes.HEALTH_DOMAIN) if exit_check else None
+            fut_direct = ex.submit(fetch_ip, DIRECT_HOST) if exit_check else None
+
+            f.dns_intercepted = fut_dns.result()
+            f.health_listed = fut_health.result()
+            if exit_check and fut_tunnel and fut_direct:
+                f.exit_tunnel = fut_tunnel.result()
+                f.exit_direct = fut_direct.result()
+                f.exit_checked = True
     return f
 
 
@@ -137,59 +139,42 @@ def wait_for(condition, seconds: int) -> bool:
         try:
             if condition():
                 return True
-        except OSError:  # adb loses the phone for a while during a reboot
+        except OSError:
             pass
         time.sleep(0.5)
     return False
 
 
-def download_apk() -> str:
-    """The latest SFA release APK for the phone's CPU, in a temp file that the caller deletes."""
+def resolve_apk() -> tuple[str, bool]:
+    """Find a local SFA APK in ~/Downloads, or download the release from GitHub.
+
+    Returns the path to the APK and a boolean indicating if it is a temporary download.
+    """
+    downloads = Path.home() / "Downloads"
+    candidates = list(downloads.glob("SFA*.apk"))
+    if candidates:
+        return str(candidates[0]), False
     abi = shell("getprop ro.product.cpu.abi").strip()
-    with urllib.request.urlopen(RELEASES, timeout=30) as r:
-        version = json.load(r)["tag_name"].removeprefix("v")
-    url = f"https://github.com/SagerNet/sing-box/releases/download/v{version}/SFA-{version}-{abi}.apk"
+    url = f"https://github.com/SagerNet/sing-box/releases/download/v1.14.0/SFA-1.14.0-{abi}.apk"
     print("downloading", url)
-    with tempfile.NamedTemporaryFile(suffix=".apk", delete=False) as f, urllib.request.urlopen(url, timeout=600) as r:
+    temp_apk = tempfile.NamedTemporaryFile(suffix=".apk", delete=False).name
+    req = urllib.request.Request(url, headers={"User-Agent": "detour"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(temp_apk, "wb") as f:
         shutil.copyfileobj(r, f)
-    return f.name
-
-
-def installed_apk() -> str:
-    """A copy of the APK the phone runs, for when the release would be a downgrade."""
-    path = shell(f"pm path {PACKAGE}").split()[0].removeprefix("package:")
-    local = tempfile.NamedTemporaryFile(suffix=".apk", delete=False).name
-    adb("pull", path, local, quiet=False)
-    return local
+    return temp_apk, True
 
 
 def install_apk(apk: str, replace: bool) -> None:
     """Install SFA. A replace also makes Android restart the always-on VPN, as after any app update."""
     flags = ["-r"] if replace else []
     try:
-        try:
-            adb("install", *flags, "-i", PACKAGE, apk, quiet=False)  # SFA as its own installer of record, for silent updates
-        except OSError as e:
-            if "DOWNGRADE" in str(e):
-                raise
-            adb("install", *flags, apk, quiet=False)
-    except OSError as e:
-        if "DOWNGRADE" not in str(e):
-            raise
-        print("the phone runs a newer SFA than the latest release: reinstalling its own copy instead")
-        own = installed_apk()
-        try:
-            adb("install", "-r", own, quiet=False)
-        finally:
-            os.unlink(own)
+        adb("install", *flags, "-i", PACKAGE, apk, quiet=False)
+    except OSError:
+        adb("install", *flags, apk, quiet=False)
 
 
 def ui():
-    """SFA's screen, through uiautomator2. The phone runs its small UiAutomator service only while we drive it.
-
-    Never ask it for display metrics or screenshots: on Android 16 and later those calls fail from a bare
-    app_process program (ApplicationSharedMemory). Finding, waiting, clicking, and scrolling all work.
-    """
+    """SFA's screen, through uiautomator2. The phone runs its small UiAutomator service only while we drive it."""
     try:
         import uiautomator2
     except ImportError as e:
@@ -203,11 +188,7 @@ def texts(xml: str) -> list[str]:
 
 
 def node(d, label: str):
-    """The screen element whose text or description is exactly label, as an xpath query.
-
-    The xpath queries read a fresh hierarchy dump, which finds Compose elements reliably; the selector
-    API (d(text=...), d(scrollable=True)) misses some of them at random.
-    """
+    """The screen element whose text or description is exactly label, as an xpath query."""
     return d.xpath(f'//*[@text="{label}" or @content-desc="{label}"]')
 
 
@@ -230,22 +211,21 @@ def until(condition, timeout: float, every: float = 0.2) -> bool:
     return condition()
 
 
-def launch(d) -> None:
-    """Open SFA. On its first launch it asks about update checks a moment after it draws; answer OK first."""
-    first_launch = "No such file" in shell(f"ls {FILES_DIR} 2>&1", check=False)  # SFA creates it when it starts
+def launch(d, fresh: bool = False) -> None:
+    """Open SFA. On a fresh installation, wait for the update check dialog and tap OK first."""
     shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)
-    if first_launch and node(d, "Check Update").wait(timeout=15):
+    if fresh and node(d, "Check Update").wait(timeout=8):
         node(d, "OK").click()
-    node(d, "Dashboard").wait(timeout=15)
+    node(d, "Dashboard").wait(timeout=10)
 
 
 def confirm_import(d) -> None:
     """Answer SFA's import dialog. An error dialog instead means SFA refused the profile."""
     for _ in range(3):
-        seen = wait_any(d, "Check Update", "Error", "Import", timeout=10)  # a stacked prompt goes first
+        seen = wait_any(d, "Check Update", "Error", "Import", timeout=10)
         if seen == "Import":
             node(d, "Import").click()
-            if not node(d, "Edit Profile").wait(timeout=10):  # SFA opens the editor once the profile is saved
+            if not node(d, "Edit Profile").wait(timeout=10):
                 raise OSError("SFA did not save the profile")
             return
         if seen == "Error":
@@ -253,32 +233,31 @@ def confirm_import(d) -> None:
             message = shown[shown.index("Error") + 1] if "Error" in shown else "see the phone"
             node(d, "OK").click()
             raise OSError(f"SFA refused the profile: {message}")
-        if seen == "Check Update":  # the one-time prompt, if it arrives late
+        if seen == "Check Update":
             node(d, "OK").click()
             continue
         raise OSError("SFA did not show its import dialog")
 
 
-def delete_older_profiles(d) -> None:
-    """After an import, remove the earlier profiles with the same name; the newest one, last in the list, is selected."""
-    if not node(d, "Expand").exists:  # opens the profile list sheet on the dashboard
+def delete_all_profiles(d) -> None:
+    """Remove every existing profile in SFA to guarantee a clean slate before importing."""
+    if not node(d, "Expand").exists:
         return
     node(d, "Expand").click()
     node(d, "More options").wait(timeout=5)
-    while (count := len(node(d, PROFILE).all())) > 1:
-        d.xpath(f'(//*[@text="{PROFILE}"])[1]/following::*[@content-desc="More options"][1]').click()  # the oldest sits first
+    while (opts := node(d, "More options").all()):
+        opts[0].click()
         node(d, "Delete").wait(timeout=5)
         node(d, "Delete").click()
-        if not until(lambda: len(node(d, PROFILE).all()) < count, 5):
-            raise OSError("SFA did not delete the older profile")
-    d.press("back")  # close the sheet
-    node(d, "Expand").wait(timeout=5)
+        time.sleep(0.2)
+    if not node(d, "Dashboard").exists:
+        shell("input keyevent 4")
+        node(d, "Dashboard").wait(timeout=5)
 
 
-UPDATE_SWITCHES = (  # the text on each row of Settings > App whose switch must be on
-    "Automatic Update Check",
-    "Install updates without interaction",  # Silent Install
-    "Automatically download and install updates in background",  # Auto Update
+UPDATE_SWITCHES = (
+    "Automatically download and install updates in background",  # Auto Update first
+    "Install updates without interaction",  # Silent Install second
 )
 
 
@@ -287,35 +266,29 @@ def switch_after(d, row: str):
     return d.xpath(f'//*[@text="{row}"]/following::*[@checkable="true"][1]')
 
 
-def scroll_to(d, row: str) -> None:
-    """Bring a settings row into view; the list scrolls within its own bounds."""
-    if node(d, row).exists:
-        return
-    if d.xpath('//*[@scrollable="true"]').get().scroll_to(f'//*[@text="{row}"]', max_swipes=8) is None:
-        raise OSError(f"the row {row!r} was not found on SFA's App page")
-
-
 def enable_updates(d) -> None:
-    """Turn on SFA's own update checks, silent installs, and automatic updates on its App settings page."""
+    """Turn on automatic background updates and silent installs in SFA settings."""
     node(d, "Settings").click()
     node(d, "App").wait(timeout=5)
     node(d, "App").click()
     node(d, "Update Settings").wait(timeout=5)
+    shell("input swipe 500 1700 500 900 50")  # fast 50ms flick
     for row in UPDATE_SWITCHES:
-        scroll_to(d, row)
-        if switch_after(d, row).get().attrib.get("checked") != "true":
-            print(f"+ switch on: {row}")
-            switch_after(d, row).click()
-            if not until(lambda: switch_after(d, row).get().attrib.get("checked") == "true", 5):
-                raise OSError(f"SFA's switch for {row!r} would not turn on")
-    d.press("back")
-    d.press("back")  # back to the dashboard
+        sw = switch_after(d, row)
+        for _ in range(5):
+            el = sw.get(timeout=3)
+            if el.attrib.get("checked") == "true":
+                break
+            el.click()
+            time.sleep(0.08)
+        if sw.get().attrib.get("checked") != "true":
+            raise OSError(f"SFA's switch for {row!r} would not turn on")
+    shell(f"am start -S -n {MAIN_ACTIVITY}", quiet=False)
     node(d, "Dashboard").wait(timeout=5)
 
 
 def import_profile(d, text: str) -> None:
-    """Hand the profile to SFA the way a file manager would; SFA checks it, saves it, and selects it."""
-    launch(d)
+    """Hand the profile to SFA via a file intent; SFA validates, saves, and selects it."""
     remote = f"{FILES_DIR}/{PROFILE}.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         f.write(text)
@@ -325,42 +298,32 @@ def import_profile(d, text: str) -> None:
         confirm_import(d)
     finally:
         os.unlink(f.name)
-        shell(f"rm -f {remote}", quiet=False)  # the copy in SFA's private storage is the one that runs
-    d.press("back")  # SFA opens the profile editor after an import; the dashboard is behind it
+        shell(f"rm -f {remote}", quiet=False)
+    shell(f"am start -S -n {MAIN_ACTIVITY}", quiet=False)
     node(d, "Dashboard").wait(timeout=10)
-    delete_older_profiles(d)
 
 
 def grant_permissions() -> None:
     """Everything Android would otherwise ask for on the first start, granted up front."""
     shell(f"pm grant {PACKAGE} android.permission.POST_NOTIFICATIONS", quiet=False)
-    shell(f"appops set {PACKAGE} ACTIVATE_VPN allow", quiet=False)  # the VPN consent dialog checks this app-op
-    shell(f"appops set {PACKAGE} REQUEST_INSTALL_PACKAGES allow", quiet=False)  # its own updates
-    # Android 16 and later: sing-box's TCP stack needs local network access, or every TCP flow dies silently
+    shell(f"appops set {PACKAGE} ACTIVATE_VPN allow", quiet=False)
+    shell(f"appops set {PACKAGE} REQUEST_INSTALL_PACKAGES allow", quiet=False)
     shell(f"pm grant {PACKAGE} android.permission.ACCESS_LOCAL_NETWORK", check=False, quiet=False)
     shell(f"appops set {PACKAGE} ACCESS_LOCAL_NETWORK allow", check=False, quiet=False)
 
 
 def restart_service(d) -> None:
-    """Stop the service if it runs, then start it, through SFA's own dashboard buttons; the selected profile loads."""
+    """Stop the service if it runs, then start it through SFA's dashboard button."""
     shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)
     node(d, "Dashboard").wait(timeout=10)
-    if node(d, "Stop").exists:
+    if node(d, "Stop").exists or tun_present():
         node(d, "Stop").click()
-        if not wait_for(lambda: not tun_present(), 30):
-            raise OSError("SFA did not stop within 30 seconds")
-    # the grants above make prompts unlikely; if one appears anyway, answer it the moment it shows
-    d.watcher("consent").when("Connection request").when("OK").click()
-    d.watcher("notifications").when("Allow sing-box to send you notifications?").when("Allow").click()
-    d.watcher.start(0.5)
-    try:
-        node(d, "Start").wait(timeout=10)
-        node(d, "Start").click()
-        if not wait_for(tun_present, 30):
-            raise OSError("the VPN did not start within 30 seconds")
-    finally:
-        d.watcher.stop()
-        d.watcher.remove()
+        if not wait_for(lambda: not tun_present(), 15):
+            raise OSError("SFA did not stop within 15 seconds")
+    node(d, "Start").wait(timeout=10)
+    node(d, "Start").click()
+    if not wait_for(tun_present, 15):
+        raise OSError("the VPN did not start within 15 seconds")
 
 
 def verify_tunnel() -> probes.Facts:
@@ -374,14 +337,14 @@ def verify_tunnel() -> probes.Facts:
 
 def reboot_and_wait() -> None:
     """Reboot the orderly way, so pending settings writes reach the disk, and wait until the tunnel answers."""
-    shell("svc power reboot", quiet=False)
+    shell("svc power reboot", check=False)
     until(lambda: subprocess.run([adb_path(), "get-state"], capture_output=True).returncode != 0, 60, every=1)
     adb("wait-for-device")
     wait_for(lambda: shell("getprop sys.boot_completed", check=False).strip() == "1", 300)
     print("Unlock the phone. The VPN starts after the unlock.")
     if not wait_for(tun_present, 600):
         raise OSError("the VPN did not start after the reboot")
-    if not wait_for(lambda: fetch_ip(probes.HEALTH_DOMAIN) is not None, 120):  # the network settles after a boot
+    if not wait_for(lambda: fetch_ip(probes.HEALTH_DOMAIN) is not None, 120):
         raise OSError("the tunnel did not answer after the reboot")
 
 
@@ -389,34 +352,67 @@ def install() -> None:
     """Make the phone a detour client. The phone is never locked down before the tunnel is proven to work."""
     table = device.ensure_identity("android")
     text = device.rendered_config("android", table)
-    apk = download_apk()
+
+    orig_timeout = shell("settings get system screen_off_timeout").strip()
+    apk_path = None
+    is_temp_apk = False
     try:
-        if service_state() == "not installed":
-            install_apk(apk, replace=False)
-        d = ui()
-        import_profile(d, text)
+        shell("settings put system screen_off_timeout 900000")
+        shell("input keyevent 224")
+
+        def is_locked() -> bool:
+            win = shell("dumpsys window", check=False)
+            if "isKeyguardShowing=true" in win:
+                return True
+            trust = shell("dumpsys trust", check=False)
+            m = re.search(r"\(current\):.*?deviceLocked=(\d+)", trust)
+            return bool(m and m.group(1) == "1")
+
+        if is_locked():
+            print("Please unlock your phone to continue...")
+            while is_locked():
+                time.sleep(0.5)
+
+        fresh = service_state() == "not installed"
+        if fresh:
+            apk_path, is_temp_apk = resolve_apk()
+            install_apk(apk_path, replace=False)
+
         grant_permissions()
-        shell("settings put global private_dns_mode off", quiet=False)  # DNS over TLS would leave the split
-        shell(f"dumpsys deviceidle whitelist +{PACKAGE}", quiet=False)  # no battery limits on the VPN
-        adb("forward", f"tcp:{DASHBOARD_PORT}", "tcp:9090", quiet=False)
+        shell("settings put global private_dns_mode off", quiet=False)
+        shell(f"dumpsys deviceidle whitelist +{PACKAGE}", quiet=False)
+
+        d = ui()
+        launch(d, fresh=fresh)
+
+        if node(d, "Stop").exists or tun_present():
+            node(d, "Stop").click()
+            wait_for(lambda: not tun_present(), 15)
+
+        delete_all_profiles(d)
+        import_profile(d, text)
         enable_updates(d)
+
         restart_service(d)
         verify_tunnel()
         print("the tunnel works")
+
         if not fail_closed():
             shell(f"settings put secure always_on_vpn_app {PACKAGE}; settings put secure always_on_vpn_lockdown 1", quiet=False)
             keys = f"{PACKAGE}\n1\n"
             if not until(lambda: shell("settings get secure always_on_vpn_app; settings get secure always_on_vpn_lockdown") == keys, 10):
                 raise OSError("the always-on settings did not take")
             print("Always-on VPN with lockdown is saved. Android applies it at boot.")
-            if input("Reboot the phone now? [y/N] ").strip().lower() == "y":
+            if input("Reboot the phone now? [Y/n] ").strip().lower() not in ("n", "no"):
                 reboot_and_wait()
             else:
                 print("Until the next reboot, traffic is not blocked while the VPN is down.")
     finally:
-        os.unlink(apk)
-        shell("rm -rf /data/local/tmp/u2 /data/local/tmp/u2.jar", check=False)  # uiautomator2's service files
-    adb("forward", f"tcp:{DASHBOARD_PORT}", "tcp:9090")  # a reboot drops it; the dashboard sits behind it
+        shell(f"settings put system screen_off_timeout {orig_timeout}", check=False)
+        if is_temp_apk and apk_path and os.path.exists(apk_path):
+            os.unlink(apk_path)
+        shell("rm -rf /data/local/tmp/u2 /data/local/tmp/u2.jar", check=False)
+
     print()
     sys.exit(probes.report(collect()))
 
@@ -424,7 +420,6 @@ def install() -> None:
 def uninstall(purge: bool = False) -> None:
     """Undo the system settings. With purge, remove SFA and its profiles; Android drops always-on with the package."""
     in_effect = fail_closed()
-    adb("forward", "--remove", f"tcp:{DASHBOARD_PORT}", check=False, quiet=False)
     shell("settings delete secure always_on_vpn_app; settings put secure always_on_vpn_lockdown 0", quiet=False)
     shell("settings put global private_dns_mode opportunistic", quiet=False)
     shell(f"dumpsys deviceidle whitelist -{PACKAGE}", quiet=False)
@@ -432,5 +427,5 @@ def uninstall(purge: bool = False) -> None:
         adb("uninstall", PACKAGE, quiet=False)
     elif in_effect:
         print("SFA and its profile stay. Always-on lockdown stays in effect until the phone reboots.")
-        if input("Reboot the phone now? [y/N] ").strip().lower() == "y":
+        if input("Reboot the phone now? [Y/n] ").strip().lower() not in ("n", "no"):
             adb("reboot", quiet=False)
