@@ -1,4 +1,5 @@
 """detour.android: the parsers that read a phone's answers. Samples are real output from Android 17."""
+import re
 import unittest
 from unittest.mock import patch
 
@@ -71,37 +72,40 @@ ERROR_DIALOG = ["Error", "Failed to decode profile: invalid message", "Copy", "O
 IMPORT_DIALOG = ["Import Profile", 'Import profile "detour"?', "Cancel", "Import"]
 
 
-class FakeSelector:
-    """What d(text=...) or d(description=...) returns on the fake device."""
-    def __init__(self, dev, kind, value):
-        self.dev, self.kind, self.value = dev, kind, value
+class FakeElement:
+    def __init__(self, text, checked=None):
+        self.text, self.attrib = text, {"content-desc": "", **({"checked": "true" if checked else "false"} if checked is not None else {})}
+
+
+class FakeQuery:
+    """What d.xpath(...) returns on the fake device: exact-text matches, or a row's switch."""
+    def __init__(self, dev, labels, row=None):
+        self.dev, self.labels, self.row = dev, labels, row
+
+    def all(self):
+        if self.row is not None:
+            return [FakeElement("", self.dev.switches[self.row])]
+        return [FakeElement(t) for t in self.dev.screen() if t in self.labels]
 
     @property
     def exists(self):
-        return self.value in self.dev.screen()
+        return bool(self.all())
 
-    def wait(self, timeout=0):
+    def wait(self, timeout=None):
         return self.exists
 
-    def click(self, timeout=None):
-        if self.kind == "switch":
-            self.dev.switches[self.value] = not self.dev.switches[self.value]
-        elif not self.exists:
-            raise LookupError(self.value)
-        self.dev.clicks.append(self.value)
+    def get(self):
+        return self.all()[0]
+
+    def click(self):
+        if self.row is not None:
+            self.dev.switches[self.row] = not self.dev.switches[self.row]
+            self.dev.clicks.append(self.row)
+            return
+        if not self.exists:
+            raise LookupError(self.labels)
+        self.dev.clicks.append(self.all()[0].text)
         self.dev.advance()
-
-    def right(self, **selector):
-        return FakeSelector(self.dev, "switch", self.value)
-
-    @property
-    def info(self):
-        return {"checked": self.dev.switches[self.value]}
-
-    class scroll:
-        @staticmethod
-        def to(**selector):
-            return True
 
 
 class FakeDevice:
@@ -109,9 +113,9 @@ class FakeDevice:
     def __init__(self, screens, switches=None):
         self.screens, self.switches, self.clicks, self.presses = list(screens), dict(switches or {}), [], []
 
-    def __call__(self, **selector):
-        (kind, value), = selector.items()
-        return FakeSelector(self, kind, value)
+    def xpath(self, expression):
+        labels = re.findall(r'@text="([^"]*)"', expression)
+        return FakeQuery(self, labels, row=labels[0] if "checkable" in expression else None)
 
     def screen(self):
         return self.screens[0] if self.screens else []
@@ -149,7 +153,7 @@ class ConfirmImportTest(unittest.TestCase):
 
 class EnableUpdatesTest(unittest.TestCase):
     def test_only_the_off_switches_are_clicked(self):
-        page = ["Settings", "App", *android.UPDATE_SWITCHES]
+        page = ["Settings", "App", "Update Settings", "Dashboard", *android.UPDATE_SWITCHES]
         d = FakeDevice([page], {android.UPDATE_SWITCHES[0]: True, android.UPDATE_SWITCHES[1]: False, android.UPDATE_SWITCHES[2]: False})
         with patch("detour.android.time.sleep"):
             android.enable_updates(d)

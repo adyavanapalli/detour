@@ -52,12 +52,7 @@ def config_import(target: str, path: str | None) -> None:
 
 
 def status(target: str) -> int:
-    facts = importlib.import_module(f"detour.{target}").collect()
-    verdict = probes.assess(facts)
-    print(f"{verdict.state}: {verdict.reason}")
-    for name, value in vars(facts).items():
-        print(f"  {name:<16} {value}")
-    return 0 if verdict.state == "on" else 1
+    return probes.report(importlib.import_module(f"detour.{target}").collect())
 
 
 def install(target: str) -> None:

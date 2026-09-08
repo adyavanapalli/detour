@@ -50,6 +50,15 @@ def assess(f: Facts) -> Verdict:
     return Verdict("on", f"listed traffic exits via the VPN at {f.exit_tunnel}")
 
 
+def report(facts: Facts) -> int:
+    """Print the verdict and every fact; the exit code is 0 only for on."""
+    verdict = assess(facts)
+    print(f"{verdict.state}: {verdict.reason}")
+    for name, value in vars(facts).items():
+        print(f"  {name:<16} {value}")
+    return 0 if verdict.state == "on" else 1
+
+
 def resolve(name: str) -> list[str] | None:
     """IPv4 answers for name: [] for NXDOMAIN, None when the resolver failed."""
     try:

@@ -93,7 +93,8 @@ def install() -> None:
     run("systemctl", "enable", UNIT, root=True)
     run("systemctl", "restart", UNIT, root=True)
     run("systemctl", "restart", "systemd-resolved", root=True)
-    print("installed. Check it with: detour linux status")
+    print()
+    probes.report(collect())
 
 
 def uninstall(purge: bool = False) -> None:

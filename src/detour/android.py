@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -130,14 +131,15 @@ def tun_present() -> bool:
 
 
 def wait_for(condition, seconds: int) -> bool:
-    """Poll once a second until condition() is true; False when the time runs out."""
-    for _ in range(seconds):
+    """Poll until condition() is true; False when the time runs out."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
         try:
             if condition():
                 return True
         except OSError:  # adb loses the phone for a while during a reboot
             pass
-        time.sleep(1)
+        time.sleep(0.5)
     return False
 
 
@@ -200,43 +202,77 @@ def texts(xml: str) -> list[str]:
     return [a or b for a, b in re.findall(r""" text=(?:"([^"]*)"|'([^']*)')""", xml) if a or b]
 
 
+def node(d, label: str):
+    """The screen element whose text or description is exactly label, as an xpath query.
+
+    The xpath queries read a fresh hierarchy dump, which finds Compose elements reliably; the selector
+    API (d(text=...), d(scrollable=True)) misses some of them at random.
+    """
+    return d.xpath(f'//*[@text="{label}" or @content-desc="{label}"]')
+
+
+def wait_any(d, *labels: str, timeout: float) -> str | None:
+    """The first of these labels to appear on screen, or None when none does in time."""
+    query = d.xpath(" | ".join(f'//*[@text="{label}" or @content-desc="{label}"]' for label in labels))
+    if not query.wait(timeout=timeout):
+        return None
+    found = {el.text for el in query.all()} | {el.attrib.get("content-desc") for el in query.all()}
+    return next((label for label in labels if label in found), None)
+
+
+def until(condition, timeout: float, every: float = 0.2) -> bool:
+    """Poll a condition until it is true; False when the time runs out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(every)
+    return condition()
+
+
 def launch(d) -> None:
-    """Open SFA. On its first launch it asks about update checks; answer OK before anything else."""
-    shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)  # the first launch also creates the working directory
-    if d(text="Check Update").wait(timeout=4):
-        d(text="OK").click()
-        time.sleep(1)
+    """Open SFA. On its first launch it asks about update checks a moment after it draws; answer OK first."""
+    first_launch = "No such file" in shell(f"ls {FILES_DIR} 2>&1", check=False)  # SFA creates it when it starts
+    shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)
+    if first_launch and node(d, "Check Update").wait(timeout=15):
+        node(d, "OK").click()
+    node(d, "Dashboard").wait(timeout=15)
 
 
 def confirm_import(d) -> None:
     """Answer SFA's import dialog. An error dialog instead means SFA refused the profile."""
-    for _ in range(20):
-        if d(text="Error").exists:
+    for _ in range(3):
+        seen = wait_any(d, "Check Update", "Error", "Import", timeout=10)  # a stacked prompt goes first
+        if seen == "Import":
+            node(d, "Import").click()
+            if not node(d, "Edit Profile").wait(timeout=10):  # SFA opens the editor once the profile is saved
+                raise OSError("SFA did not save the profile")
+            return
+        if seen == "Error":
             shown = texts(d.dump_hierarchy())
             message = shown[shown.index("Error") + 1] if "Error" in shown else "see the phone"
-            d(text="OK").click()
+            node(d, "OK").click()
             raise OSError(f"SFA refused the profile: {message}")
-        if d(text="Import").exists:
-            d(text="Import").click()
-            return
-        if d(text="Check Update").exists:  # the one-time prompt, if it arrives late
-            d(text="OK").click()
-        time.sleep(0.5)
-    raise OSError("SFA did not show its import dialog")
+        if seen == "Check Update":  # the one-time prompt, if it arrives late
+            node(d, "OK").click()
+            continue
+        raise OSError("SFA did not show its import dialog")
 
 
 def delete_older_profiles(d) -> None:
     """After an import, remove the earlier profiles with the same name; the newest one, last in the list, is selected."""
-    if not d(description="Expand").exists:  # opens the profile list sheet on the dashboard
+    if not node(d, "Expand").exists:  # opens the profile list sheet on the dashboard
         return
-    d(description="Expand").click()
-    time.sleep(1)
-    while d(text=PROFILE).count > 1:
-        d(text=PROFILE)[0].right(description="More options").click()  # the oldest sits first
-        d(text="Delete").click(timeout=5)
-        time.sleep(1)
+    node(d, "Expand").click()
+    node(d, "More options").wait(timeout=5)
+    while (count := len(node(d, PROFILE).all())) > 1:
+        d.xpath(f'(//*[@text="{PROFILE}"])[1]/following::*[@content-desc="More options"][1]').click()  # the oldest sits first
+        node(d, "Delete").wait(timeout=5)
+        node(d, "Delete").click()
+        if not until(lambda: len(node(d, PROFILE).all()) < count, 5):
+            raise OSError("SFA did not delete the older profile")
     d.press("back")  # close the sheet
-    time.sleep(1)
+    node(d, "Expand").wait(timeout=5)
 
 
 UPDATE_SWITCHES = (  # the text on each row of Settings > App whose switch must be on
@@ -246,25 +282,35 @@ UPDATE_SWITCHES = (  # the text on each row of Settings > App whose switch must 
 )
 
 
+def switch_after(d, row: str):
+    """The switch on the settings row that carries this text."""
+    return d.xpath(f'//*[@text="{row}"]/following::*[@checkable="true"][1]')
+
+
+def scroll_to(d, row: str) -> None:
+    """Bring a settings row into view; the list scrolls within its own bounds."""
+    if node(d, row).exists:
+        return
+    if d.xpath('//*[@scrollable="true"]').get().scroll_to(f'//*[@text="{row}"]', max_swipes=8) is None:
+        raise OSError(f"the row {row!r} was not found on SFA's App page")
+
+
 def enable_updates(d) -> None:
     """Turn on SFA's own update checks, silent installs, and automatic updates on its App settings page."""
-    d(text="Settings").click(timeout=5)
-    d(text="App").click(timeout=5)
-    for _ in range(2):  # the second pass checks the result
-        for row in UPDATE_SWITCHES:
-            d(scrollable=True).scroll.to(text=row)
-            switch = d(text=row).right(checkable=True)
-            if not switch.info["checked"]:
-                print(f"+ switch on: {row}")
-                switch.click()
-                time.sleep(1)
+    node(d, "Settings").click()
+    node(d, "App").wait(timeout=5)
+    node(d, "App").click()
+    node(d, "Update Settings").wait(timeout=5)
     for row in UPDATE_SWITCHES:
-        d(scrollable=True).scroll.to(text=row)
-        if not d(text=row).right(checkable=True).info["checked"]:
-            raise OSError(f"SFA's switch for {row!r} would not turn on")
+        scroll_to(d, row)
+        if switch_after(d, row).get().attrib.get("checked") != "true":
+            print(f"+ switch on: {row}")
+            switch_after(d, row).click()
+            if not until(lambda: switch_after(d, row).get().attrib.get("checked") == "true", 5):
+                raise OSError(f"SFA's switch for {row!r} would not turn on")
     d.press("back")
     d.press("back")  # back to the dashboard
-    time.sleep(1)
+    node(d, "Dashboard").wait(timeout=5)
 
 
 def import_profile(d, text: str) -> None:
@@ -277,12 +323,11 @@ def import_profile(d, text: str) -> None:
         adb("push", f.name, remote, quiet=False)
         shell(f"am start -a android.intent.action.VIEW -d file://{remote} -n {MAIN_ACTIVITY}", quiet=False)
         confirm_import(d)
-        time.sleep(2)  # SFA reads the file again after the confirmation
     finally:
         os.unlink(f.name)
         shell(f"rm -f {remote}", quiet=False)  # the copy in SFA's private storage is the one that runs
     d.press("back")  # SFA opens the profile editor after an import; the dashboard is behind it
-    time.sleep(1)
+    node(d, "Dashboard").wait(timeout=10)
     delete_older_profiles(d)
 
 
@@ -299,18 +344,18 @@ def grant_permissions() -> None:
 def restart_service(d) -> None:
     """Stop the service if it runs, then start it, through SFA's own dashboard buttons; the selected profile loads."""
     shell(f"am start -n {MAIN_ACTIVITY}", quiet=False)
-    d(text="Dashboard").wait(timeout=10)
-    if d(description="Stop").exists:
-        d(description="Stop").click()
+    node(d, "Dashboard").wait(timeout=10)
+    if node(d, "Stop").exists:
+        node(d, "Stop").click()
         if not wait_for(lambda: not tun_present(), 30):
             raise OSError("SFA did not stop within 30 seconds")
-        time.sleep(1)
     # the grants above make prompts unlikely; if one appears anyway, answer it the moment it shows
     d.watcher("consent").when("Connection request").when("OK").click()
     d.watcher("notifications").when("Allow sing-box to send you notifications?").when("Allow").click()
     d.watcher.start(0.5)
     try:
-        d(description="Start").click(timeout=10)
+        node(d, "Start").wait(timeout=10)
+        node(d, "Start").click()
         if not wait_for(tun_present, 30):
             raise OSError("the VPN did not start within 30 seconds")
     finally:
@@ -328,13 +373,16 @@ def verify_tunnel() -> probes.Facts:
 
 
 def reboot_and_wait() -> None:
-    adb("reboot", quiet=False)
-    time.sleep(5)
+    """Reboot the orderly way, so pending settings writes reach the disk, and wait until the tunnel answers."""
+    shell("svc power reboot", quiet=False)
+    until(lambda: subprocess.run([adb_path(), "get-state"], capture_output=True).returncode != 0, 60, every=1)
     adb("wait-for-device")
     wait_for(lambda: shell("getprop sys.boot_completed", check=False).strip() == "1", 300)
     print("Unlock the phone. The VPN starts after the unlock.")
     if not wait_for(tun_present, 600):
         raise OSError("the VPN did not start after the reboot")
+    if not wait_for(lambda: fetch_ip(probes.HEALTH_DOMAIN) is not None, 120):  # the network settles after a boot
+        raise OSError("the tunnel did not answer after the reboot")
 
 
 def install() -> None:
@@ -357,6 +405,9 @@ def install() -> None:
         print("the tunnel works")
         if not fail_closed():
             shell(f"settings put secure always_on_vpn_app {PACKAGE}; settings put secure always_on_vpn_lockdown 1", quiet=False)
+            keys = f"{PACKAGE}\n1\n"
+            if not until(lambda: shell("settings get secure always_on_vpn_app; settings get secure always_on_vpn_lockdown") == keys, 10):
+                raise OSError("the always-on settings did not take")
             print("Always-on VPN with lockdown is saved. Android applies it at boot.")
             if input("Reboot the phone now? [y/N] ").strip().lower() == "y":
                 reboot_and_wait()
@@ -365,7 +416,9 @@ def install() -> None:
     finally:
         os.unlink(apk)
         shell("rm -rf /data/local/tmp/u2 /data/local/tmp/u2.jar", check=False)  # uiautomator2's service files
-    print(f"installed. Check it with: detour android status\ndashboard: http://127.0.0.1:{DASHBOARD_PORT}/dashboard/")
+    adb("forward", f"tcp:{DASHBOARD_PORT}", "tcp:9090")  # a reboot drops it; the dashboard sits behind it
+    print()
+    sys.exit(probes.report(collect()))
 
 
 def uninstall(purge: bool = False) -> None:
