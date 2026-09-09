@@ -61,7 +61,7 @@ def rendered_config(target: str, table: dict) -> str:
                 "accept_search_domain": True,
             })
             data["dns"]["rules"].append({
-                "preferred_by": ["ts-ep"],
+                "preferred_by": ["dns-tailscale"],
                 "action": "route",
                 "server": "dns-tailscale",
             })

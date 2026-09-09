@@ -45,6 +45,10 @@ class ValuesTest(unittest.TestCase):
         self.assertIsNotNone(ts_dns)
         self.assertTrue(ts_dns["accept_search_domain"])
 
+        ts_dns_rule = next((r for r in data["dns"]["rules"] if "dns-tailscale" in r.get("preferred_by", [])), None)
+        self.assertIsNotNone(ts_dns_rule)
+        self.assertEqual(ts_dns_rule["server"], "dns-tailscale")
+
         # Check Route
         ts_route = next((r for r in data["route"]["rules"] if "100.64.0.0/10" in r.get("ip_cidr", [])), None)
         self.assertIsNotNone(ts_route)
