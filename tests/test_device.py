@@ -39,6 +39,7 @@ class ValuesTest(unittest.TestCase):
         self.assertEqual(ts_ep["auth_key"], "tskey-auth-test1234")
         self.assertEqual(ts_ep["hostname"], "test-device")
         self.assertTrue(ts_ep["accept_routes"])
+        self.assertTrue(ts_ep["ssh_server"])
 
         # Check DNS
         ts_dns = next((srv for srv in data["dns"]["servers"] if srv.get("type") == "tailscale"), None)
@@ -50,6 +51,10 @@ class ValuesTest(unittest.TestCase):
         self.assertEqual(ts_dns_rule["server"], "dns-tailscale")
 
         # Check Route
+        ts_inbound = next((r for r in data["route"]["rules"] if "ts-ep" in r.get("inbound", [])), None)
+        self.assertIsNotNone(ts_inbound)
+        self.assertEqual(ts_inbound["outbound"], "direct")
+
         ts_route = next((r for r in data["route"]["rules"] if "100.64.0.0/10" in r.get("ip_cidr", [])), None)
         self.assertIsNotNone(ts_route)
         self.assertEqual(ts_route["outbound"], "ts-ep")

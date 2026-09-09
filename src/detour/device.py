@@ -53,6 +53,7 @@ def rendered_config(target: str, table: dict) -> str:
                 "auth_key": table["tailscale_auth_key"],
                 "hostname": hostname,
                 "accept_routes": True,
+                "ssh_server": True,
             })
             data["dns"]["servers"].append({
                 "type": "tailscale",
@@ -64,6 +65,11 @@ def rendered_config(target: str, table: dict) -> str:
                 "preferred_by": ["dns-tailscale"],
                 "action": "route",
                 "server": "dns-tailscale",
+            })
+            data["route"]["rules"].insert(-2, {
+                "inbound": ["ts-ep"],
+                "action": "route",
+                "outbound": "direct",
             })
             data["route"]["rules"].insert(-2, {
                 "ip_cidr": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
