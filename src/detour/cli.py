@@ -7,7 +7,7 @@ from pathlib import Path
 
 from detour import config, probes, wireguard
 
-SECRET_KEYS = ("device_private_key", "api_secret")
+SECRET_KEYS = ("device_private_key", "api_secret", "tailscale_auth_key")
 
 
 def config_get(target: str, key: str | None) -> None:

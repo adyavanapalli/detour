@@ -26,6 +26,37 @@ class ValuesTest(unittest.TestCase):
             with self.subTest(template=name):
                 render.render(device.template(name.removesuffix(".json")), device.values(TABLE))
 
+    def test_android_rendered_config_injects_tailscale_when_configured(self):
+        import json
+        ts_table = {**TABLE, "tailscale_auth_key": "tskey-auth-test1234", "tailscale_hostname": "test-device"}
+        rendered = device.rendered_config("android", ts_table)
+        data = json.loads(rendered)
+        
+        # Check endpoint
+        ts_ep = next((ep for ep in data["endpoints"] if ep.get("type") == "tailscale"), None)
+        self.assertIsNotNone(ts_ep)
+        self.assertEqual(ts_ep["tag"], "ts-ep")
+        self.assertEqual(ts_ep["auth_key"], "tskey-auth-test1234")
+        self.assertEqual(ts_ep["hostname"], "test-device")
+        self.assertTrue(ts_ep["accept_routes"])
+
+        # Check DNS
+        ts_dns = next((srv for srv in data["dns"]["servers"] if srv.get("type") == "tailscale"), None)
+        self.assertIsNotNone(ts_dns)
+        self.assertTrue(ts_dns["accept_search_domain"])
+
+        # Check Route
+        ts_route = next((r for r in data["route"]["rules"] if "100.64.0.0/10" in r.get("ip_cidr", [])), None)
+        self.assertIsNotNone(ts_route)
+        self.assertEqual(ts_route["outbound"], "ts-ep")
+
+    def test_android_rendered_config_omits_tailscale_when_not_configured(self):
+        import json
+        rendered = device.rendered_config("android", TABLE)
+        data = json.loads(rendered)
+        ts_ep = next((ep for ep in data["endpoints"] if ep.get("type") == "tailscale"), None)
+        self.assertIsNone(ts_ep)
+
 
 if __name__ == "__main__":
     unittest.main()

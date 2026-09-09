@@ -44,8 +44,33 @@ def rendered_config(target: str, table: dict) -> str:
     text = render.render(template(target), values(table))
     if target == "android":
         no_comments = re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE)
-        json.loads(no_comments)
-        return text
+        data = json.loads(no_comments)
+        if table.get("tailscale_auth_key"):
+            hostname = table.get("tailscale_hostname") or "pixel-fold"
+            data["endpoints"].append({
+                "type": "tailscale",
+                "tag": "ts-ep",
+                "auth_key": table["tailscale_auth_key"],
+                "hostname": hostname,
+                "accept_routes": True,
+            })
+            data["dns"]["servers"].append({
+                "type": "tailscale",
+                "tag": "dns-tailscale",
+                "endpoint": "ts-ep",
+                "accept_search_domain": True,
+            })
+            data["dns"]["rules"].append({
+                "preferred_by": ["ts-ep"],
+                "action": "route",
+                "server": "dns-tailscale",
+            })
+            data["route"]["rules"].insert(-2, {
+                "ip_cidr": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
+                "action": "route",
+                "outbound": "ts-ep",
+            })
+        return json.dumps(data, indent=2)
     if not shutil.which("sing-box"):
         print("sing-box is not installed here, so the profile is not checked before it goes to the target")
         return text
