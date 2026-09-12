@@ -326,13 +326,17 @@ def restart_service(d) -> None:
         raise OSError("the VPN did not start within 15 seconds")
 
 
-def verify_tunnel() -> probes.Facts:
+def verify_tunnel(timeout: int = 20) -> probes.Facts:
     """The facts, with the tunnel proven: listed traffic exits somewhere else than direct traffic."""
+    deadline = time.monotonic() + timeout
     facts = collect()
+    while time.monotonic() < deadline:
+        if facts.exit_tunnel is not None and facts.exit_tunnel != facts.exit_direct:
+            return facts
+        time.sleep(1)
+        facts = collect()
     verdict = probes.assess(facts)
-    if facts.exit_tunnel is None or facts.exit_tunnel == facts.exit_direct:
-        raise OSError(f"the tunnel does not work ({verdict.reason}); nothing was locked down")
-    return facts
+    raise OSError(f"the tunnel does not work ({verdict.reason}); nothing was locked down")
 
 
 def reboot_and_wait() -> None:
