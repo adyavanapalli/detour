@@ -35,7 +35,8 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(render.PLACEHOLDER.findall(out), [])
         if shutil.which("sing-box"):
             with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
-                f.write(out); f.flush()
+                f.write(out)
+                f.flush()
                 subprocess.run(["sing-box", "check", "-c", f.name], check=True)
 
 
