@@ -24,6 +24,10 @@ class AssessTest(unittest.TestCase):
         self.assertEqual(self.state(health_listed=False), "warn")
         self.assertEqual(self.state(exit_tunnel=None), "warn")  # tunnel down
         self.assertEqual(self.state(fail_closed=False), "warn")
+        self.assertEqual(self.state(extension=False), "warn")  # Linux: missing or out of date
+
+    def test_extension_unknown_is_not_judged(self):
+        self.assertEqual(self.state(extension=None), "on")  # Android has no extension
 
     def test_same_exit_is_leak(self):
         self.assertEqual(self.state(exit_direct="203.0.113.7"), "leak")

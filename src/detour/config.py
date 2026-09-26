@@ -15,6 +15,7 @@ KEYS = (
     "api_secret",
     "tailscale_auth_key",
     "tailscale_hostname",
+    "user_agent",  # read by the Chrome extension, not by sing-box
 )
 
 

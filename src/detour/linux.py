@@ -5,7 +5,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from detour import device, probes
+from detour import chrome, config, device, probes
 
 UNIT = "sing-box"
 TUN = Path("/sys/class/net/sbtun0")
@@ -59,7 +59,8 @@ def fail_closed() -> bool | None:
 
 def collect(timeout: float = 8, exit_check: bool = True) -> probes.Facts:
     """The status facts for this machine."""
-    f = probes.Facts(service=service_state(), tun=TUN.exists(), fail_closed=fail_closed())
+    f = probes.Facts(service=service_state(), tun=TUN.exists(), fail_closed=fail_closed(),
+                     extension=chrome.current(config.get("linux")))
     if f.service == "active":
         f.dns_intercepted = probes.dns_intercepted()
         f.health_listed = probes.health_listed()
@@ -78,8 +79,29 @@ def install_package() -> None:
     run("apt-get", "install", "-y", UNIT, root=True)
 
 
+def install_extension(chrome_bin: str, table: dict) -> None:
+    """Pack the Chrome extension, force-install it by policy, and pin it first. This stops Chrome."""
+    ext_id, files = chrome.build(chrome_bin, table)
+    for path, text in files.items():
+        write_root_file(path, text, "0644")
+    stale = [str(p) for p in chrome.root_files() if p not in files]  # for example, the old Chromium policy
+    if stale:
+        run("rm", "-f", *stale, root=True)
+    chrome.remove_local(purge=False)
+    chrome.pin_first(ext_id)
+
+
+def uninstall_extension(purge: bool) -> None:
+    """Remove the policy and the descriptors, so Chrome drops the extension at its next start."""
+    files = chrome.root_files()
+    if files:
+        run("rm", "-f", *map(str, files), root=True)
+    chrome.remove_local(purge)
+
+
 def install() -> None:
     """Make this machine a detour client. Each root step is printed as it runs."""
+    chrome_bin = chrome.preflight()  # like the config check below: before anything changes
     table = device.ensure_identity("linux")
     install_package()
     text = device.rendered_config("linux", table)
@@ -93,12 +115,14 @@ def install() -> None:
     run("systemctl", "enable", UNIT, root=True)
     run("systemctl", "restart", UNIT, root=True)
     run("systemctl", "restart", "systemd-resolved", root=True)
+    install_extension(chrome_bin, table)
     print()
     probes.report(collect())
 
 
 def uninstall(purge: bool = False) -> None:
-    """Stop the service and restore the system resolver. With purge, remove the package too."""
+    """Remove the extension, stop the service, and restore the resolver. With purge, remove the package too."""
+    uninstall_extension(purge)  # first: the extension must not outlive the tunnel
     run("systemctl", "disable", "--now", UNIT, root=True, check=False)
     run("rm", "-f", str(RESOLVED_DROPIN), root=True)
     run("rm", "-rf", str(UNIT_DROPIN.parent), root=True)

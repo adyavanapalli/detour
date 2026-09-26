@@ -1,13 +1,42 @@
 """detour.device: the template values that every target renders."""
+import os
+import tempfile
 import unittest
 from importlib import resources
 
-from detour import device, render
+from detour import config, device, render
 
 TABLE = dict(rules_url="https://example.com/rules.jsonc", server_endpoint="203.0.113.1:51820",
              server_public_key="xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=", tunnel_dns="192.0.2.1",
              device_address="192.0.2.2/24", device_private_key="yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=",
              api_secret="0123456789abcdef")
+
+
+class PreflightTest(unittest.TestCase):
+    """install stops in ensure_identity, before it changes anything, when a required key is missing."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["XDG_CONFIG_HOME"] = self.tmp.name
+
+    def tearDown(self):
+        os.environ.pop("XDG_CONFIG_HOME", None)
+        self.tmp.cleanup()
+
+    def fill(self, target, keys):
+        for key in keys:
+            config.put(target, key, TABLE[key])
+
+    def test_linux_needs_user_agent(self):
+        self.fill("linux", device.REQUIRED)
+        with self.assertRaises(ValueError) as cm:
+            device.ensure_identity("linux")
+        self.assertIn("missing user_agent", str(cm.exception))
+        self.assertIsNone(config.get("linux", "device_private_key"))  # nothing was generated
+
+    def test_android_does_not_need_user_agent(self):
+        self.fill("android", device.REQUIRED)
+        self.assertIn("device_private_key", device.ensure_identity("android"))
 
 
 class ValuesTest(unittest.TestCase):

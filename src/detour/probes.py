@@ -20,6 +20,7 @@ class Facts:
     exit_checked: bool = False
     exit_tunnel: str | None = None  # address via the health domain; None after a check: unreachable
     exit_direct: str | None = None  # address via the direct URL
+    extension: bool | None = None  # Linux: the Chrome extension is installed with the current config
 
 
 @dataclass
@@ -45,6 +46,8 @@ def assess(f: Facts) -> Verdict:
         return Verdict("leak", f"listed traffic exits directly via {f.exit_tunnel}")
     if f.fail_closed is False:
         return Verdict("warn", "not fail-closed: traffic is not blocked when the service stops")
+    if f.extension is False:
+        return Verdict("warn", "the Chrome extension is missing or out of date; run detour linux install")
     if None in (f.dns_intercepted, f.health_listed) or not f.exit_checked:
         return Verdict("warn", "checks still running")
     return Verdict("on", f"listed traffic exits via the VPN at {f.exit_tunnel}")

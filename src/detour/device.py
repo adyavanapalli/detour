@@ -11,11 +11,14 @@ from importlib import resources
 from detour import config, render, wireguard
 
 REQUIRED = ("rules_url", "server_endpoint", "server_public_key", "tunnel_dns", "device_address")
+# The keys that install checks before it changes anything. sing-box does not use user_agent:
+# the Chrome extension gets it from the [linux] table, and it has no default value.
+REQUIRED_FOR = {"linux": (*REQUIRED, "user_agent"), "android": REQUIRED}
 
 
 def ensure_identity(target: str) -> dict:
     """The target's table, complete: generates the device key and the API secret if missing."""
-    table = config.require(target, REQUIRED)
+    table = config.require(target, REQUIRED_FOR[target])
     if not table.get("device_private_key"):
         config.put(target, "device_private_key", wireguard.generate_private_key())
         public = wireguard.public_key(config.get(target, "device_private_key"))

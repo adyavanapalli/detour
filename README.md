@@ -12,11 +12,13 @@ Listed domains take a detour through the tunnel. Everything else goes straight t
 - A connection to a FakeIP carries its domain name. sing-box resolves the real address inside the tunnel and sends the connection through WireGuard.
 - Every other connection goes directly to the internet.
 - If sing-box is not running, the device is closed. On Linux, DNS does not work at all, so listed domains cannot resolve. On Android, always-on VPN with lockdown blocks every connection.
+- On Linux, a Chrome extension (Detour Sentry) sets the User-Agent on listed domains. It also blocks requests from a listed page to unlisted domains, so that those requests cannot go around the tunnel.
 
 ## Requirements
 
 - Ubuntu with systemd-resolved. Other systemd distributions are untested.
 - Python 3.11 or newer, and uv.
+- For the Linux target: Google Chrome and `openssl`. If either one is missing, `detour linux install` stops before it changes anything.
 - For the top-bar indicator: GNOME with the Ubuntu AppIndicator extension, plus the packages `python3-gi` and `gir1.2-ayatanaappindicator3-0.1`.
 - For a phone: Android 12 or newer with USB debugging on, and `adb` on this machine, on PATH or under `ANDROID_HOME`. If `sing-box` is installed here too, the profile is checked before it goes to the phone.
 - The Android target drives SFA's screen with [uiautomator2](https://github.com/openatx/uiautomator2), the `android` extra of the package; `install.sh` includes it. During an install it runs a small UiAutomator service on the phone under the shell user, and removes it afterwards.
@@ -47,12 +49,45 @@ The script installs into `~/.local/share/detour/venv` on the system Python, so t
         detour linux config set server_public_key <server public key>
         detour linux config set tunnel_dns <resolver inside the tunnel>
         detour linux config set device_address <this device's tunnel address, with prefix>
+        detour linux config set user_agent '<User-Agent for listed domains in Chrome>'
+
+   `user_agent` has no default value. If it or any other key is not set, `install` stops before it changes anything.
 
    If the machine already has a wg-quick conf: `sudo cat /etc/wireguard/wg0.conf | detour linux config import`.
 
 2. Run `detour linux install`. It generates a device key if there is none, prints the `[Peer]` block, and asks for your password before each root step.
 3. Add the `[Peer]` block on the WireGuard server.
-4. Run `detour linux status`. The first line is the verdict.
+4. Start Google Chrome again. The install stopped it to put the extension first on the toolbar.
+5. Run `detour linux status`. The first line is the verdict.
+
+## The Chrome extension
+
+`detour linux install` installs the Detour Sentry extension in Google Chrome. On a listed domain, the extension does these things:
+
+- It sets the `User-Agent` and `Sec-Ch-Ua-Platform` headers from `user_agent`.
+- It blocks requests from the page to domains that are not listed.
+
+The extension has no settings and no popup. Its toolbar icon shows the state of the current tab:
+
+| Icon | Meaning |
+|---|---|
+| Blue | The tab is on a listed domain. Its traffic goes through the tunnel, with the `User-Agent` set. |
+| Gray | The tab is not on a listed domain, or it is not a web page. |
+| Red | The last sync failed. The rules from the last good sync still apply. |
+
+On a listed domain, the badge shows the number of requests to unlisted domains that were blocked on the page, as in uBlock Origin. A request that a different extension blocked counts too. The tooltip shows `TUNNELED` or `DIRECT` and the time of the last sync, after the error of a failed sync. A click on the icon syncs the rule list.
+
+The extension downloads the rule list from `rules_url` every 15 minutes. `rules_url` and `user_agent` go into the extension when `install` packs it. To change them, set them and run `detour linux install` again.
+
+The install packs the extension with a key in `~/.local/share/detour/chrome`. The key sets the extension ID. A managed policy in `/etc/opt/chrome/policies/managed/detour_sentry.json` force-installs the extension and force-pins its icon. You cannot remove, unpin, or move it in Chrome.
+
+CAUTION: `install` stops every Google Chrome process that you own, headless ones included. Chrome gets `SIGTERM` first, so that it saves your session, and `SIGKILL` after 20 seconds.
+
+Chrome must stop because the install puts the icon first on the toolbar. The install edits the list of pinned icons in the `Preferences` file of each profile, and Chrome rewrites this file while it runs.
+
+`uninstall --purge` deletes the key. The next install makes a new key, so Chrome sees a new extension with empty storage.
+
+If the older `detour-sentry` installer set up the extension, `install` takes over its key, so the extension ID stays the same, and removes its files.
 
 ## Set up an Android phone
 
@@ -87,6 +122,7 @@ The order matters: the phone is never locked down before the tunnel is proven to
 | `device_address` | this device's tunnel address, with prefix |
 | `device_private_key` | generated by install if unset; masked by `config get` |
 | `api_secret` | dashboard API secret; generated by install; masked |
+| `user_agent` | Linux only, required: the `User-Agent` that the Chrome extension sends to listed domains; sing-box does not use it |
 
 Settings live in `~/.config/detour/config.toml`, mode 0600, one table per target.
 
@@ -123,6 +159,8 @@ Matching is by suffix: `example.org` also matches `www.example.org`. Keep `icanh
 
 The exit code is 0 only for `on`. The top-bar indicator shows the same verdict as a green, amber, or red cube, and writes it to `~/.cache/detour/status`.
 
+On Linux, `status` also reports `extension`: whether the policy is in place and the packed extension has the current `rules_url` and `user_agent`. If not, the verdict is `warn`.
+
 Both targets also report `fail_closed`: whether the system blocks traffic when the service is down. On Linux that is the resolver drop-in. On Android it is always-on VPN with lockdown, in effect and saved. A phone's checks run on the phone through adb. The DNS facts come from `ping`. The two exit addresses come over plain HTTP on port 80, because the shell has no TLS client.
 
 ## Dashboard
@@ -133,12 +171,14 @@ For a phone, `detour android install` forwards port 9091 to the phone, so its da
 
 ## Uninstall
 
-`detour linux uninstall` stops the service and restores the system resolver. Add `--purge` to remove the package, its config, and its state.
+`detour linux uninstall` first removes the extension policy, because the extension must not stay after the tunnel. Chrome drops the extension at its next start. Then the command stops the service and restores the system resolver. Add `--purge` to remove the package, its config, its state, and the extension key.
 
 `detour android uninstall` clears the always-on settings, restores Private DNS, and removes the battery exemption. SFA and its profile stay. Lockdown stays in effect until the phone reboots, and the tool offers the reboot. Add `--purge` to remove SFA with its profiles. Android drops always-on with the package.
 
 ## Development
 
     PYTHONPATH=src python3 -m unittest discover -s tests
+
+The tests of the Chrome extension run its `background.js` in Node. Without Node, they are skipped. The pack test needs Google Chrome and `openssl`.
 
 After a push, GitHub serves the raw `install.sh` up to 5 minutes late. Run the local copy when you test a change to it.

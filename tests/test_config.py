@@ -43,6 +43,10 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.get("linux", "rules_url"), "https://a.invalid/")
         self.assertEqual(config.get("android", "rules_url"), "https://b.invalid/")
 
+    def test_user_agent_is_a_key(self):
+        config.put("linux", "user_agent", "test-agent/1")
+        self.assertEqual(config.get("linux", "user_agent"), "test-agent/1")
+
     def test_rejects_unknown_target_and_key(self):
         with self.assertRaises(ValueError):
             config.get("windows")
