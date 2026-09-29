@@ -1,4 +1,6 @@
 """Android target: sing-box for Android (SFA) on a phone reached over ADB."""
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -18,13 +20,18 @@ VPN_SERVICE = f"{PACKAGE}/.bg.VPNService"
 MAIN_ACTIVITY = f"{PACKAGE}/.compose.MainActivity"
 FILES_DIR = f"/sdcard/Android/data/{PACKAGE}/files"  # SFA's working directory
 PROFILE = "detour"  # SFA names the imported profile after the file
-RELEASES = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.14.0"
+# The detour build of SFA. Its guard starts the VPN again after Android kills SFA. See DETOUR.md in that repository.
+SFA_REPO = "adyavanapalli/sing-box-for-android"
+SFA_RELEASE = f"https://api.github.com/repos/{SFA_REPO}/releases/latest"
+SFA_SIGNATURE = "73dab47e"  # the signing certificate of the detour build, as `dumpsys package` shows it
+GUARD_PROCESS = f"{PACKAGE}:guard"
 DIRECT_HOST = urlparse(probes.DIRECT_URL).hostname
 
 PING_ANSWER = re.compile(r"^PING \S+ \(([\d.]+)\)")
 IPV4 = re.compile(r"\d{1,3}(\.\d{1,3}){3}")
 TUN_NAME = re.compile(r"\btun\d+\b")
 MODE_CHANGE = re.compile(r"Mode changed: lockdown=(true|false) alwaysOn=(true|false)")
+SIGNATURES = re.compile(r"signatures=PackageSignatures\{\S+ version:\d+, signatures:\[([0-9a-f, ]*)\]")
 
 
 def adb_path() -> str:
@@ -105,6 +112,24 @@ def service_state() -> str:
     return "active" if "startRequested=true" in shell(f"dumpsys activity services {VPN_SERVICE}") else "inactive"
 
 
+def parse_signatures(dump: str) -> list[str]:
+    """The certificate hashes in `dumpsys package` output."""
+    found = SIGNATURES.search(dump)
+    return [s.strip() for s in found.group(1).split(",") if s.strip()] if found else []
+
+
+def sfa_build() -> str | None:
+    """detour for the detour build of SFA, other for a build with another signer, None when SFA is missing."""
+    if PACKAGE not in shell(f"pm list packages {PACKAGE}"):
+        return None
+    return "detour" if SFA_SIGNATURE in parse_signatures(shell(f"dumpsys package {PACKAGE}")) else "other"
+
+
+def guard_running() -> bool:
+    """True when the guard process of the detour build runs. It exists only while the VPN runs."""
+    return bool(shell(f"pidof {GUARD_PROCESS}", check=False).strip())
+
+
 def collect(exit_check: bool = True) -> probes.Facts:
     """The status facts for the phone, collected in parallel."""
     f = probes.Facts(service=service_state())
@@ -112,7 +137,9 @@ def collect(exit_check: bool = True) -> probes.Facts:
         return f
     f.tun = tun_present()
     f.fail_closed = fail_closed()
+    f.sfa_build = sfa_build()
     if f.service == "active":
+        f.guard = guard_running()
         with ThreadPoolExecutor(max_workers=4) as ex:
             fut_dns = ex.submit(probes.dns_intercepted, resolve)
             fut_health = ex.submit(probes.health_listed, resolve)
@@ -145,23 +172,52 @@ def wait_for(condition, seconds: int) -> bool:
     return False
 
 
-def resolve_apk() -> tuple[str, bool]:
-    """Find a local SFA APK in ~/Downloads, or download the release from GitHub.
+def pick_assets(release: dict, abi: str) -> tuple[str, str]:
+    """The download URLs of the APK for abi and of SHA256SUMS in a release of the detour SFA."""
+    assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
+    apk = next((name for name in assets if name.endswith(f"-{abi}.apk")), None)
+    if apk is None or "SHA256SUMS" not in assets:
+        raise OSError(f"release {release.get('tag_name')} of {SFA_REPO} has no APK for {abi}, or no SHA256SUMS")
+    return assets[apk], assets["SHA256SUMS"]
 
-    Returns the path to the APK and a boolean indicating if it is a temporary download.
-    """
-    downloads = Path.home() / "Downloads"
-    candidates = list(downloads.glob("SFA*.apk"))
-    if candidates:
-        return str(candidates[0]), False
-    abi = shell("getprop ro.product.cpu.abi").strip()
-    url = f"https://github.com/SagerNet/sing-box/releases/download/v1.14.0/SFA-1.14.0-{abi}.apk"
-    print("downloading", url)
-    temp_apk = tempfile.NamedTemporaryFile(suffix=".apk", delete=False).name
+
+def parse_sums(text: str) -> dict[str, str]:
+    """File name to SHA-256, from the output of sha256sum."""
+    sums = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            sums[parts[1].lstrip("*")] = parts[0].lower()
+    return sums
+
+
+def http_get(url: str, timeout: float = 30) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "detour"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def download_sfa() -> str:
+    """Download the APK of the latest detour SFA release for the phone's ABI, and check its SHA-256."""
+    abi = shell("getprop ro.product.cpu.abi").strip()
+    release = json.loads(http_get(SFA_RELEASE))
+    apk_url, sums_url = pick_assets(release, abi)
+    name = apk_url.rsplit("/", 1)[-1]
+    expected = parse_sums(http_get(sums_url).decode()).get(name)
+    if expected is None:
+        raise OSError(f"SHA256SUMS of {release.get('tag_name')} has no line for {name}")
+    print("downloading", apk_url)
+    temp_apk = tempfile.NamedTemporaryFile(suffix=".apk", delete=False).name
+    digest = hashlib.sha256()
+    req = urllib.request.Request(apk_url, headers={"User-Agent": "detour"})
     with urllib.request.urlopen(req, timeout=120) as r, open(temp_apk, "wb") as f:
-        shutil.copyfileobj(r, f)
-    return temp_apk, True
+        while chunk := r.read(1 << 20):
+            digest.update(chunk)
+            f.write(chunk)
+    if digest.hexdigest() != expected:
+        os.unlink(temp_apk)
+        raise OSError(f"{name} does not match its SHA-256 in SHA256SUMS")
+    return temp_apk
 
 
 def install_apk(apk: str, replace: bool) -> None:
@@ -377,9 +433,16 @@ def install() -> None:
             while is_locked():
                 time.sleep(0.5)
 
-        fresh = service_state() == "not installed"
+        build = sfa_build()
+        if build == "other":
+            # Another signer: Android cannot update it to the detour build. The install below imports the profile again.
+            print("SFA on the phone is not the detour build, so it does not restart after Android kills it.")
+            print("Replacing it. Its profiles are lost; this install imports the detour profile again.")
+            adb("uninstall", PACKAGE, quiet=False)
+            build = None
+        fresh = build is None
         if fresh:
-            apk_path, is_temp_apk = resolve_apk()
+            apk_path, is_temp_apk = download_sfa(), True
             install_apk(apk_path, replace=False)
 
         grant_permissions()
