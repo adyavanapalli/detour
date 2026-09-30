@@ -168,6 +168,22 @@ class EnableUpdatesTest(unittest.TestCase):
         mock_sh.assert_any_call(f"am start -S -n {android.MAIN_ACTIVITY}", quiet=False)
 
 
+RELEASE = {"tag_name": "v1.14.2", "assets": [
+    {"name": "SFA-1.14.2-arm64-v8a.apk", "browser_download_url": "https://example.com/SFA-1.14.2-arm64-v8a.apk"},
+    {"name": "SFA-1.14.2-legacy-android-5-arm64-v8a.apk", "browser_download_url": "https://example.com/legacy.apk"},
+    {"name": "SFA-1.14.2-universal.apk", "browser_download_url": "https://example.com/universal.apk"},
+]}
+
+
+class ApkUrlTest(unittest.TestCase):
+    def test_the_apk_for_the_abi_not_the_legacy_one(self):
+        self.assertEqual(android.apk_url(RELEASE, "arm64-v8a"), "https://example.com/SFA-1.14.2-arm64-v8a.apk")
+
+    def test_missing_abi_raises(self):
+        with self.assertRaises(OSError):
+            android.apk_url(RELEASE, "x86_64")
+
+
 class TunTest(unittest.TestCase):
     def test_tun_but_not_tunl(self):
         self.assertTrue(android.TUN_NAME.search(SYS_CLASS_NET))

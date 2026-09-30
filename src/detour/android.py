@@ -1,4 +1,5 @@
 """Android target: sing-box for Android (SFA) on a phone reached over ADB."""
+import json
 import os
 import re
 import shutil
@@ -18,7 +19,7 @@ VPN_SERVICE = f"{PACKAGE}/.bg.VPNService"
 MAIN_ACTIVITY = f"{PACKAGE}/.compose.MainActivity"
 FILES_DIR = f"/sdcard/Android/data/{PACKAGE}/files"  # SFA's working directory
 PROFILE = "detour"  # SFA names the imported profile after the file
-RELEASES = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.14.0"
+LATEST_RELEASE = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"  # excludes pre-releases
 DIRECT_HOST = urlparse(probes.DIRECT_URL).hostname
 
 PING_ANSWER = re.compile(r"^PING \S+ \(([\d.]+)\)")
@@ -145,6 +146,16 @@ def wait_for(condition, seconds: int) -> bool:
     return False
 
 
+def apk_url(release: dict, abi: str) -> str:
+    """The download URL of SFA-<version>-<abi>.apk in a sing-box release. Legacy and Play builds do not match."""
+    version = release.get("tag_name", "").removeprefix("v")
+    name = f"SFA-{version}-{abi}.apk"
+    for asset in release.get("assets", []):
+        if asset.get("name") == name:
+            return asset["browser_download_url"]
+    raise OSError(f"sing-box release {release.get('tag_name')} has no {name}")
+
+
 def resolve_apk() -> tuple[str, bool]:
     """Find a local SFA APK in ~/Downloads, or download the release from GitHub.
 
@@ -155,7 +166,9 @@ def resolve_apk() -> tuple[str, bool]:
     if candidates:
         return str(candidates[0]), False
     abi = shell("getprop ro.product.cpu.abi").strip()
-    url = f"https://github.com/SagerNet/sing-box/releases/download/v1.14.0/SFA-1.14.0-{abi}.apk"
+    req = urllib.request.Request(LATEST_RELEASE, headers={"User-Agent": "detour"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        url = apk_url(json.load(r), abi)
     print("downloading", url)
     temp_apk = tempfile.NamedTemporaryFile(suffix=".apk", delete=False).name
     req = urllib.request.Request(url, headers={"User-Agent": "detour"})
