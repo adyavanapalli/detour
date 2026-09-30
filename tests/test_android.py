@@ -24,17 +24,6 @@ DUMP_FRESH = "VPNs:\n  0: null\n    mEventChanges (most recent first):\n"
 
 SYS_CLASS_NET = "aware_nmi0 dummy0 lo tun0 tunl0 wlan0 wwan0\n"
 
-PACKAGE_DUMP = ("    versionCode=73901 minSdk=24 targetSdk=37\n    apkSigningVersion=2\n"
-                "    signatures=PackageSignatures{6bb5f39 version:2, signatures:[73dab47e], past signatures:[]}\n"
-                "    pkgFlags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP ]\n")
-RELEASE = {"tag_name": "v1.14.2-detour.1", "assets": [
-    {"name": "SFA-1.14.2-arm64-v8a.apk", "browser_download_url": "https://example.com/SFA-1.14.2-arm64-v8a.apk"},
-    {"name": "SFA-version-metadata.json", "browser_download_url": "https://example.com/SFA-version-metadata.json"},
-    {"name": "SHA256SUMS", "browser_download_url": "https://example.com/SHA256SUMS"},
-]}
-SUMS = ("b1946ac92492d2347c6235b4d2611184b1946ac92492d2347c6235b4d2611184  SFA-1.14.2-arm64-v8a.apk\n"
-        "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03  SFA-version-metadata.json\n")
-
 CHECK_UPDATE = ('<node index="0" text="Check Update" class="android.widget.TextView" bounds="[100,100][900,200]" />'
                 '<node index="1" text="Would you like to enable automatic update checking from GitHub?" bounds="[100,220][900,300]" />'
                 '<node index="2" text="No, thanks" class="android.widget.Button" bounds="[1000,1500][1200,1600]" />'
@@ -177,36 +166,6 @@ class EnableUpdatesTest(unittest.TestCase):
         self.assertTrue(all(d.switches.values()))
         mock_sh.assert_any_call("input swipe 500 1700 500 900 50")
         mock_sh.assert_any_call(f"am start -S -n {android.MAIN_ACTIVITY}", quiet=False)
-
-
-class SignatureTest(unittest.TestCase):
-    def test_detour_build(self):
-        self.assertEqual(android.parse_signatures(PACKAGE_DUMP), [android.SFA_SIGNATURE])
-
-    def test_other_signer_and_no_package(self):
-        self.assertEqual(android.parse_signatures(PACKAGE_DUMP.replace("73dab47e", "1a2b3c4d")), ["1a2b3c4d"])
-        self.assertEqual(android.parse_signatures(""), [])
-
-
-class ReleaseTest(unittest.TestCase):
-    def test_apk_for_the_abi_and_the_sums(self):
-        apk, sums = android.pick_assets(RELEASE, "arm64-v8a")
-        self.assertTrue(apk.endswith("/SFA-1.14.2-arm64-v8a.apk"))
-        self.assertTrue(sums.endswith("/SHA256SUMS"))
-
-    def test_missing_abi_raises(self):
-        with self.assertRaises(OSError):
-            android.pick_assets(RELEASE, "x86_64")
-
-    def test_missing_sums_raises(self):
-        release = {**RELEASE, "assets": [a for a in RELEASE["assets"] if a["name"] != "SHA256SUMS"]}
-        with self.assertRaises(OSError):
-            android.pick_assets(release, "arm64-v8a")
-
-    def test_sums(self):
-        sums = android.parse_sums(SUMS)
-        self.assertEqual(sums["SFA-1.14.2-arm64-v8a.apk"], "b1946ac92492d2347c6235b4d2611184b1946ac92492d2347c6235b4d2611184")
-        self.assertEqual(len(sums), 2)
 
 
 class TunTest(unittest.TestCase):

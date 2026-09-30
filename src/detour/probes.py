@@ -21,8 +21,6 @@ class Facts:
     exit_tunnel: str | None = None  # address via the health domain; None after a check: unreachable
     exit_direct: str | None = None  # address via the direct URL
     extension: bool | None = None  # Linux: the Chrome extension is installed with the current config
-    sfa_build: str | None = None  # Android: detour, or other for an SFA that does not restart after a kill
-    guard: bool | None = None  # Android: the guard process runs; it starts SFA again after a kill
 
 
 @dataclass
@@ -50,10 +48,6 @@ def assess(f: Facts) -> Verdict:
         return Verdict("warn", "not fail-closed: traffic is not blocked when the service stops")
     if f.extension is False:
         return Verdict("warn", "the Chrome extension is missing or out of date; run detour linux install")
-    if f.sfa_build == "other":
-        return Verdict("warn", "SFA is not the detour build and does not restart after a kill; run detour android install")
-    if f.guard is False:
-        return Verdict("warn", "the SFA guard does not run, so SFA does not restart after a kill")
     if None in (f.dns_intercepted, f.health_listed) or not f.exit_checked:
         return Verdict("warn", "checks still running")
     return Verdict("on", f"listed traffic exits via the VPN at {f.exit_tunnel}")

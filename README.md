@@ -93,8 +93,6 @@ If the older `detour-sentry` installer set up the extension, `install` takes ove
 
 The phone runs sing-box for Android (SFA). detour talks to it over ADB and never needs root.
 
-detour installs its own build of SFA from [adyavanapalli/sing-box-for-android](https://github.com/adyavanapalli/sing-box-for-android). The official SFA stays down after Android kills it, for example after an ANR or when the phone is short of memory. With lockdown, the phone then has no network until you tap Start. The detour build adds a guard process: after a kill, it starts the VPN again within a few seconds. When a start fails, the detour build posts the notification "SFA stopped" with the reason. `DETOUR.md` in that repository describes the changes.
-
 1. Connect the phone with USB debugging on. `adb devices` must list it. If several devices are attached, set `ANDROID_SERIAL`.
 2. Set the same keys under the `android` target, or import a wg-quick conf: `detour android config import phone.conf`.
 3. Unlock the phone and keep it unlocked. Then run `detour android install`.
@@ -103,7 +101,7 @@ detour installs its own build of SFA from [adyavanapalli/sing-box-for-android](h
 
 `detour android install` does these things, and prints each adb command as it runs:
 
-- Installs the detour build of SFA from the latest release of `adyavanapalli/sing-box-for-android` if the phone does not have it, and checks its SHA-256. If the phone has an SFA with another signing key, such as the official one, the tool uninstalls it first. Its profiles are lost, and the install imports the detour profile again.
+- Installs SFA from the latest sing-box release if the phone does not have it.
 - Renders the profile and hands it to SFA as a file. SFA asks "Import profile detour?" and the tool answers. It answers SFA's one-time "Check Update" prompt with OK first, and deletes older profiles with the same name.
 - Grants what SFA would otherwise ask for: notifications, the VPN consent, local network access (Android 16 and later), and installs from SFA for its own updates. No prompt appears.
 - Turns Private DNS off, so DNS over TLS cannot leave the split. Exempts SFA from battery limits.
@@ -162,8 +160,6 @@ Matching is by suffix: `example.org` also matches `www.example.org`. Keep `icanh
 The exit code is 0 only for `on`. The top-bar indicator shows the same verdict as a green, amber, or red cube, and writes it to `~/.cache/detour/status`.
 
 On Linux, `status` also reports `extension`: whether the policy is in place and the packed extension has the current `rules_url` and `user_agent`. If not, the verdict is `warn`.
-
-On Android, `status` also reports `sfa_build` and `guard`. `sfa_build` is `detour` for the detour build of SFA, and `other` for any other build. `guard` tells if the guard process runs; it runs while the VPN runs. If the build is `other` or the guard does not run, SFA stays down after a kill, and the verdict is `warn`.
 
 Both targets also report `fail_closed`: whether the system blocks traffic when the service is down. On Linux that is the resolver drop-in. On Android it is always-on VPN with lockdown, in effect and saved. A phone's checks run on the phone through adb. The DNS facts come from `ping`. The two exit addresses come over plain HTTP on port 80, because the shell has no TLS client.
 

@@ -30,13 +30,12 @@ This document describes the steps for `detour android install`.
 
 ## 3. Application Provisioning
 
-1. Check if SFA (`io.nekohasekai.sfa`) is installed on the phone, and read its signing certificate with `dumpsys package`.
-2. If the detour build of SFA is installed, skip downloading and installing the APK.
-3. If an SFA with another signing key is installed, uninstall it. Android cannot update it to the detour build.
-4. If SFA is missing, read the latest release of `adyavanapalli/sing-box-for-android` from the GitHub API.
-5. Download the APK for the phone's ABI (`ro.product.cpu.abi`) and the file `SHA256SUMS` of that release.
-6. If the SHA-256 of the APK does not match `SHA256SUMS`, stop with an error.
-7. Install the APK through ADB.
+1. Check if SFA (`io.nekohasekai.sfa`) is installed on the phone.
+2. If SFA is already installed, skip downloading and installing the APK.
+3. If SFA is missing, check `~/Downloads` for a matching `SFA-<version>-<abi>.apk` file.
+4. If a matching APK exists in `~/Downloads`, install that file.
+5. If no APK exists locally, query GitHub releases for the latest version and download the APK.
+6. Install the APK through ADB.
 
 ## 4. Headless Permissions and System Settings
 
