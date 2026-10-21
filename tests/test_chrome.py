@@ -87,9 +87,14 @@ class ChromeTest(unittest.TestCase):
         (chrome.DATA_DIR / "config.json").write_text(chrome.config_json(TABLE))
         self.assertFalse(chrome.current(TABLE))  # no policy
         chrome.POLICY.write_text("{}")
+        self.assertFalse(chrome.current(TABLE))  # a policy from before DNS over HTTPS was turned off
+        chrome.POLICY.write_text(chrome.policy_json("id", "file:///update.xml"))
         self.assertTrue(chrome.current(TABLE))
         self.assertFalse(chrome.current({**TABLE, "user_agent": "other/2"}))
         self.assertFalse(chrome.current({"rules_url": "x"}))
+
+    def test_policy_turns_off_dns_over_https(self):
+        self.assertEqual(json.loads(chrome.policy_json("id", "file:///update.xml"))["DnsOverHttpsMode"], "off")
 
     def test_put_first_moves_both_copies_and_keeps_the_rest(self):
         prefs = {"extensions": {"pinned_extensions": ["a", "me", "b"]},
@@ -150,6 +155,7 @@ class ChromeTest(unittest.TestCase):
         crx = chrome.DATA_DIR / chrome.CRX_NAME
         self.assertTrue(crx.exists())
         self.assertEqual(ext_id, chrome.extension_id(chrome.DATA_DIR / "key.pem"))
+        self.assertEqual(json.loads(files[chrome.POLICY])["DnsOverHttpsMode"], "off")
         policy = json.loads(files[chrome.POLICY])["ExtensionSettings"][ext_id]
         self.assertEqual(policy["installation_mode"], "force_installed")
         self.assertEqual(policy["toolbar_pin"], "force_pinned")

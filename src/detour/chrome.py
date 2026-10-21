@@ -28,6 +28,7 @@ LEGACY_DIR = Path.home() / ".local/share/detour-sentry"  # where the separate de
 CRX_NAME = "detour-sentry.crx"
 
 POLICY = Path("/etc/opt/chrome/policies/managed/detour_sentry.json")
+DOH_MODE = "off"  # the DnsOverHttpsMode policy in POLICY
 DESCRIPTOR_DIRS = (Path("/opt/google/chrome/extensions"), Path("/usr/share/google-chrome/extensions"))
 LEGACY_POLICY = Path("/etc/chromium/policies/managed/detour_sentry.json")
 
@@ -127,7 +128,10 @@ def policy_json(ext_id: str, update_url: str) -> str:
     # adds it to the list, and it keeps the position that pin_first() gave it. The user cannot drag it.
     settings = {ext_id: {"installation_mode": "force_installed", "update_url": update_url,
                          "toolbar_pin": "force_pinned"}}
-    return json.dumps({"ExtensionSettings": settings}, indent=2) + "\n"
+    # Chrome's own DNS over HTTPS resolves names outside sing-box: a listed name then gets its real
+    # address, not a FakeIP, and the lookup is encrypted where the tunnel cannot catch it. Off, so
+    # that Chrome sends every lookup to sing-box.
+    return json.dumps({"ExtensionSettings": settings, "DnsOverHttpsMode": DOH_MODE}, indent=2) + "\n"
 
 
 def descriptor_json(crx: Path, version: str) -> str:
@@ -264,8 +268,11 @@ def remove_local(purge: bool) -> None:
 
 
 def current(table: dict) -> bool:
-    """True when the policy is in place and the packed config.json matches the [linux] table."""
+    """True when the policy is in place with DNS over HTTPS off, and the packed config.json matches the
+    [linux] table."""
     try:
-        return POLICY.exists() and (DATA_DIR / "config.json").read_text() == config_json(table)
+        policy = json.loads(POLICY.read_text())
+        return (isinstance(policy, dict) and policy.get("DnsOverHttpsMode") == DOH_MODE
+                and (DATA_DIR / "config.json").read_text() == config_json(table))
     except (OSError, ValueError):
         return False
