@@ -88,6 +88,17 @@ class ValuesTest(unittest.TestCase):
         self.assertIsNotNone(ts_route)
         self.assertEqual(ts_route["outbound"], "ts-ep")
 
+    def test_android_dns_never_sends_a_listed_name_to_the_network(self):
+        import json
+        for table in (TABLE, {**TABLE, "tailscale_auth_key": "tskey-auth-test1234"}):
+            with self.subTest(tailscale="tailscale_auth_key" in table):
+                dns = json.loads(device.rendered_config("android", table))["dns"]
+                self.assertEqual(dns["final"], "dns-direct")
+                listed = [r for r in dns["rules"] if r.get("rule_set") == ["vpn-domains"]]
+                # TXT, MX, SRV, and the rest, for a listed name or from a listed app: through the tunnel
+                self.assertEqual(listed[-1], {"rule_set": ["vpn-domains"], "action": "route", "server": "dns-vpn"})
+                self.assertTrue(all(r.get("server") != "dns-direct" for r in listed))
+
     def test_android_rendered_config_omits_tailscale_when_not_configured(self):
         import json
         rendered = device.rendered_config("android", TABLE)

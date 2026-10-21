@@ -17,8 +17,12 @@
       { "domain": ["use-application-dns.net"], "action": "predefined", "rcode": "NXDOMAIN" },
       // no HTTPS or SVCB records for listed domains: they could reveal real addresses
       { "rule_set": ["vpn-domains"], "query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR" },
-      // the rule set carries package names as well as domain suffixes: a listed app's every lookup is caught here
-      { "rule_set": ["vpn-domains"], "query_type": ["A", "AAAA"], "action": "route", "server": "dns-fakeip" }
+      // the rule set carries package names as well as domain suffixes: a listed app's A and AAAA lookups
+      // are caught here, whatever the name
+      { "rule_set": ["vpn-domains"], "query_type": ["A", "AAAA"], "action": "route", "server": "dns-fakeip" },
+      // every other query for a listed name, or from a listed app (TXT, MX, SRV, and more), goes through
+      // the tunnel too, so that the network of the phone never sees it
+      { "rule_set": ["vpn-domains"], "action": "route", "server": "dns-vpn" }
     ],
     "final": "dns-direct",
     "reverse_mapping": false
