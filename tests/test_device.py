@@ -1,8 +1,11 @@
 """detour.device: the template values that every target renders."""
 import os
+import subprocess
 import tempfile
 import unittest
 from importlib import resources
+from pathlib import Path
+from unittest import mock
 
 from detour import config, device, render
 
@@ -98,6 +101,22 @@ class ValuesTest(unittest.TestCase):
                 # TXT, MX, SRV, and the rest, for a listed name or from a listed app: through the tunnel
                 self.assertEqual(listed[-1], {"rule_set": ["vpn-domains"], "action": "route", "server": "dns-vpn"})
                 self.assertTrue(all(r.get("server") != "dns-direct" for r in listed))
+
+    def test_android_profile_is_checked_before_it_goes_to_the_phone(self):
+        checked = []
+
+        def sing_box(cmd, check):
+            checked.append((cmd[:3], Path(cmd[3]).read_text()))
+
+        with mock.patch.object(device.shutil, "which", return_value="/usr/bin/sing-box"), \
+                mock.patch.object(device.subprocess, "run", side_effect=sing_box):
+            profile = device.rendered_config("android", {**TABLE, "tailscale_auth_key": "tskey-auth-test1234"})
+        self.assertEqual(checked, [(["sing-box", "check", "-c"], profile)])  # the very profile that is returned
+        failed = subprocess.CalledProcessError(1, "sing-box")
+        with mock.patch.object(device.shutil, "which", return_value="/usr/bin/sing-box"), \
+                mock.patch.object(device.subprocess, "run", side_effect=failed):
+            with self.assertRaises(subprocess.CalledProcessError):  # install stops before the phone
+                device.rendered_config("android", TABLE)
 
     def test_android_rendered_config_omits_tailscale_when_not_configured(self):
         import json

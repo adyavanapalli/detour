@@ -79,7 +79,7 @@ def rendered_config(target: str, table: dict) -> str:
                 "action": "route",
                 "outbound": "ts-ep",
             })
-        return json.dumps(data, indent=2)
+        text = json.dumps(data, indent=2)  # checked below like the Linux config, before it goes to the phone
     if not shutil.which("sing-box"):
         print("sing-box is not installed here, so the profile is not checked before it goes to the target")
         return text
