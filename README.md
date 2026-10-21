@@ -8,17 +8,18 @@ Listed domains take a detour through the tunnel. Everything else goes straight t
 
 ## How it works
 
-- sing-box answers all DNS on the device. A listed domain gets a FakeIP. An unlisted domain gets its real address from the local network's resolver.
+- sing-box answers all DNS on the device. A listed domain gets a FakeIP. An unlisted domain gets its real address from the local network's resolver. Every other query for a listed name goes through the tunnel.
 - A connection to a FakeIP carries its domain name. sing-box resolves the real address inside the tunnel and sends the connection through WireGuard.
+- A connection to a listed IPv4 range also goes through WireGuard. The tunnel carries IPv4 only, so IPv6 to a listed range is refused.
 - Every other connection goes directly to the internet.
-- If sing-box is not running, the device is closed. On Linux, DNS does not work at all, so listed domains cannot resolve. On Android, always-on VPN with lockdown blocks every connection.
+- If sing-box is not running, the device is closed. On Linux, a firewall lockdown refuses every connection outside the tun, except Tailscale and the network setup. On Android, always-on VPN with lockdown blocks every connection.
 - On Linux, a Chrome extension (Detour Sentry) sets the User-Agent on listed domains. It also blocks requests from a listed page to unlisted domains, so that those requests cannot go around the tunnel.
 
 ## Requirements
 
 - Ubuntu with systemd-resolved. Other systemd distributions are untested.
 - Python 3.11 or newer, and uv.
-- For the Linux target: Google Chrome and `openssl`. If either one is missing, `detour linux install` stops before it changes anything.
+- For the Linux target: Google Chrome, `openssl`, and nftables (`nft`). `/etc/resolv.conf` must come from systemd-resolved, as it does on Ubuntu by default. If one of these is missing, `detour linux install` stops before it changes anything.
 - For the top-bar indicator: GNOME with the Ubuntu AppIndicator extension, plus the packages `python3-gi` and `gir1.2-ayatanaappindicator3-0.1`.
 - For a phone: Android 12 or newer with USB debugging on, and `adb` on this machine, on PATH or under `ANDROID_HOME`. If `sing-box` is installed here too, the profile is checked before it goes to the phone.
 - The Android target drives SFA's screen with [uiautomator2](https://github.com/openatx/uiautomator2), the `android` extra of the package; `install.sh` includes it. During an install it runs a small UiAutomator service on the phone under the shell user, and removes it afterwards.
@@ -55,7 +56,7 @@ The script installs into `~/.local/share/detour/venv` on the system Python, so t
 
    If the machine already has a wg-quick conf: `sudo cat /etc/wireguard/wg0.conf | detour linux config import`.
 
-2. Run `detour linux install`. It generates a device key if there is none, prints the `[Peer]` block, and asks for your password before each root step.
+2. Run `detour linux install`. It generates a device key if there is none, prints the `[Peer]` block, and asks for your password before each root step. It turns the lockdown on only after sing-box answers DNS. If sing-box does not, the first install puts DNS back as it was and stops.
 3. Add the `[Peer]` block on the WireGuard server.
 4. Start Google Chrome again. The install stopped it to put the extension first on the toolbar.
 5. Run `detour linux status`. The first line is the verdict.
@@ -81,6 +82,8 @@ The extension downloads the rule list from `rules_url` every 15 minutes. `rules_
 
 The install packs the extension with a key in `~/.local/share/detour/chrome`. The key sets the extension ID. A managed policy in `/etc/opt/chrome/policies/managed/detour_sentry.json` force-installs the extension and force-pins its icon. You cannot remove, unpin, or move it in Chrome.
 
+The same policy turns off DNS over HTTPS in Chrome (`DnsOverHttpsMode` is `off`). Then Chrome sends every lookup to sing-box, and no listed name leaves in encrypted DNS.
+
 CAUTION: `install` stops every Google Chrome process that you own, headless ones included. Chrome gets `SIGTERM` first, so that it saves your session, and `SIGKILL` after 20 seconds.
 
 Chrome must stop because the install puts the icon first on the toolbar. The install edits the list of pinned icons in the `Preferences` file of each profile, and Chrome rewrites this file while it runs.
@@ -88,6 +91,36 @@ Chrome must stop because the install puts the icon first on the toolbar. The ins
 `uninstall --purge` deletes the key. The next install makes a new key, so Chrome sees a new extension with empty storage.
 
 If the older `detour-sentry` installer set up the extension, `install` takes over its key, so the extension ID stays the same, and removes its files.
+
+## The lockdown (Linux)
+
+`detour linux install` loads the nftables table `inet detour`. The unit `detour-lockdown.service` loads it again at every boot, before the network starts. Outside the sing-box tun, only this traffic can leave the machine:
+
+- sing-box itself, which runs as the user `sing-box`: its direct connections and the WireGuard tunnel
+- tailscaled, which marks its own traffic with `0x80000`, and the tailnet addresses on `tailscale0`
+- DHCP and IPv6 neighbor discovery
+- link-local, multicast, and broadcast addresses, and the bridges to containers and virtual machines
+- private LAN addresses, only while sing-box runs
+
+The lockdown refuses everything else. DNS outside sing-box and the tailnet is refused, so a listed name cannot leave in a lookup. Native IPv6 to the internet is refused too, because the tunnel carries IPv4 only. Programs then fall back to IPv4 at once.
+
+When sing-box stops, the internet is gone, and no listed address or name can leak. Tailscale keeps working. When sing-box starts again, everything comes back.
+
+The sing-box unit opens the private LAN addresses when it starts, and closes them when it stops. So a listed private range cannot leave through the LAN while the tunnel is down.
+
+Tailscale works under the lockdown, MagicDNS included. An exit node or a public subnet route sends traffic outside the tunnel, so the lockdown refuses that traffic. Do not use an exit node while detour is installed.
+
+The lockdown has no stop command: `systemctl stop` leaves the table in place. To remove it, run `detour linux uninstall`.
+
+## Captive portals (Linux)
+
+You can sign in to a captive portal while the lockdown is on. The login page is unlisted traffic, so sing-box sends it direct. sing-box gets the DNS server of the portal network from NetworkManager, through systemd-resolved.
+
+NetworkManager sends its own connectivity check around the tun, so the lockdown blocks it. The install turns that check off. The top-bar indicator does the check through sing-box instead, every 30 seconds. It fetches `http://connectivity-check.ubuntu.com/` and expects HTTP 204. Any other answer means that the network needs a sign-in.
+
+The indicator then shows the notification "Sign in to Network" and a menu item with the same name. Both open the check page in your browser, and the portal shows its login page. `detour linux status` reports the same fact as `portal`.
+
+Before you sign in, the tunnel cannot connect, so listed traffic fails. It does not leak. sing-box can start behind a portal: it uses its cached rule list, or the copy that install saved in `/etc/sing-box/vpn-domains.jsonc`.
 
 ## Set up an Android phone
 
@@ -159,9 +192,9 @@ Matching is by suffix: `example.org` also matches `www.example.org`. Keep `icanh
 
 The exit code is 0 only for `on`. The top-bar indicator shows the same verdict as a green, amber, or red cube, and writes it to `~/.cache/detour/status`.
 
-On Linux, `status` also reports `extension`: whether the policy is in place and the packed extension has the current `rules_url` and `user_agent`. If not, the verdict is `warn`.
+On Linux, `status` also reports `extension`: whether the policy is in place, turns off DNS over HTTPS, and the packed extension has the current `rules_url` and `user_agent`. If not, the verdict is `warn`. `status` also reports `portal`: whether the network asks for a sign-in. If it does, the verdict is `warn`.
 
-Both targets also report `fail_closed`: whether the system blocks traffic when the service is down. On Linux that is the resolver drop-in. On Android it is always-on VPN with lockdown, in effect and saved. A phone's checks run on the phone through adb. The DNS facts come from `ping`. The two exit addresses come over plain HTTP on port 80, because the shell has no TLS client.
+Both targets also report `fail_closed`: whether the system blocks traffic when the service is down. On Linux that is the lockdown: `detour-lockdown.service` is active. On Android it is always-on VPN with lockdown, in effect and saved. A phone's checks run on the phone through adb. The DNS facts come from `ping`. The two exit addresses come over plain HTTP on port 80, because the shell has no TLS client.
 
 ## Dashboard
 
@@ -171,7 +204,7 @@ For a phone, `detour android install` forwards port 9091 to the phone, so its da
 
 ## Uninstall
 
-`detour linux uninstall` first removes the extension policy, because the extension must not stay after the tunnel. Chrome drops the extension at its next start. Then the command stops the service and restores the system resolver. Add `--purge` to remove the package, its config, its state, and the extension key.
+`detour linux uninstall` first removes the extension policy, because the extension must not stay after the tunnel. Chrome drops the extension at its next start. Then the command stops the service, gives DNS back to systemd-resolved, and turns NetworkManager's connectivity check on again. It removes the lockdown last. Add `--purge` to remove the package, its config, its state, the saved rule list, and the extension key.
 
 `detour android uninstall` clears the always-on settings, restores Private DNS, and removes the battery exemption. SFA and its profile stay. Lockdown stays in effect until the phone reboots, and the tool offers the reboot. Add `--purge` to remove SFA with its profiles. Android drops always-on with the package.
 
