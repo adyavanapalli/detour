@@ -18,6 +18,8 @@ UNIT_FILE = xdg("XDG_CONFIG_HOME", ".config") / "systemd" / "user" / "detour-tra
 DASHBOARD_URL = "http://127.0.0.1:9090/dashboard/"
 INTERVAL = 5  # seconds between cheap checks
 EXIT_EVERY = 12  # ticks between exit-IP checks (60 s)
+PORTAL_EVERY = 6  # ticks between captive-portal checks (30 s); NetworkManager's own check is off
+NOTIFY = ("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications")
 
 FACES = {  # top, left, right
     "on": ("#4ade80", "#15803d", "#22c55e"),
@@ -70,19 +72,26 @@ def write_status(verdict: probes.Verdict) -> None:
 
 
 class Tray:
-    def __init__(self, Gtk, Gdk, GLib, AppIndicator):
-        self.Gtk, self.Gdk, self.GLib = Gtk, Gdk, GLib
+    def __init__(self, Gtk, Gdk, GLib, Gio, AppIndicator):
+        self.Gtk, self.Gdk, self.GLib, self.Gio = Gtk, Gdk, GLib, Gio
         self.ind = AppIndicator.Indicator.new("detour", "detour-off", AppIndicator.IndicatorCategory.SYSTEM_SERVICES)
         self.ind.set_icon_theme_path(str(ICON_DIR))
         self.ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         self.ind.set_title("detour")
         self.actions, self.tick, self.busy, self.last_exit = {}, 0, False, None
+        self.last_portal, self.notification = None, None
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.bus.signal_subscribe(NOTIFY[0], NOTIFY[2], "ActionInvoked", NOTIFY[1], None,
+                                  Gio.DBusSignalFlags.NONE, self.on_action)
         self.ind.set_menu(self.menu())
         self.refresh()
         GLib.timeout_add_seconds(INTERVAL, self.refresh)
 
     def menu(self):
         menu = self.Gtk.Menu()
+        self.sign_in = self.Gtk.MenuItem(label="Sign in to Network")
+        self.sign_in.connect("activate", lambda *_: self.open_portal())
+        menu.append(self.sign_in)
         item = self.Gtk.MenuItem(label="Open Dashboard")
         item.connect("activate", lambda *_: self.Gtk.show_uri_on_window(None, DASHBOARD_URL, self.Gdk.CURRENT_TIME))
         menu.append(item)
@@ -92,7 +101,37 @@ class Tray:
             item.connect("activate", lambda _i, a=action: subprocess.Popen(["pkexec", "systemctl", a, linux.UNIT]))
             menu.append(item)
         menu.show_all()
+        self.sign_in.set_visible(False)  # only while a captive portal is in the way
         return menu
+
+    def open_portal(self) -> None:
+        """Open the check page in the browser. The request goes through sing-box, and the portal answers it
+        with its login page. GNOME does the same when NetworkManager finds a portal."""
+        self.Gtk.show_uri_on_window(None, probes.PORTAL_URL, self.Gdk.CURRENT_TIME)
+
+    def notify(self, show: bool) -> None:
+        """Show or withdraw the "Sign in to Network" prompt. NetworkManager's check is off under the lockdown,
+        so GNOME cannot show its own."""
+        GLib, Gio = self.GLib, self.Gio
+        try:
+            if show:
+                params = GLib.Variant("(susssasa{sv}i)", (
+                    "detour", 0, "network-wireless-symbolic", "Sign in to Network",
+                    "This network needs a sign-in before the internet works.", ["default", "Sign in"], {}, -1))
+                reply = self.bus.call_sync(*NOTIFY, "Notify", params, GLib.VariantType("(u)"),
+                                           Gio.DBusCallFlags.NONE, -1, None)
+                self.notification = reply.unpack()[0]
+            elif self.notification is not None:
+                self.bus.call_sync(*NOTIFY, "CloseNotification", GLib.Variant("(u)", (self.notification,)), None,
+                                   Gio.DBusCallFlags.NONE, -1, None)
+                self.notification = None
+        except GLib.Error:
+            self.notification = None
+
+    def on_action(self, _connection, _sender, _path, _interface, _signal, params) -> None:
+        notification, _action = params.unpack()
+        if notification == self.notification:
+            self.open_portal()
 
     def refresh(self) -> bool:
         """Collect in a thread (the network calls live there), then apply on the GTK thread."""
@@ -102,20 +141,28 @@ class Tray:
         return True  # keep the timer
 
     def work(self) -> None:
-        facts = linux.collect(exit_check=self.tick % EXIT_EVERY == 0)
+        portal_check = self.tick % PORTAL_EVERY == 0
+        facts = linux.collect(exit_check=self.tick % EXIT_EVERY == 0, portal_check=portal_check)
         self.tick += 1
         if facts.exit_checked:
             self.last_exit = (facts.exit_tunnel, facts.exit_direct)
         elif self.last_exit and facts.health_listed:
             facts.exit_checked, (facts.exit_tunnel, facts.exit_direct) = True, self.last_exit
-        self.GLib.idle_add(self.apply, probes.assess(facts))
+        if portal_check:
+            self.last_portal = facts.portal
+        elif facts.service == "active":
+            facts.portal = self.last_portal
+        self.GLib.idle_add(self.apply, probes.assess(facts), bool(facts.portal))
 
-    def apply(self, verdict: probes.Verdict) -> bool:
+    def apply(self, verdict: probes.Verdict, portal: bool) -> bool:
         self.ind.set_icon_full(f"detour-{ICON_FOR[verdict.state]}", f"detour: {verdict.reason}")
         running = verdict.state != "off"
         self.actions["start"].set_visible(not running)
         self.actions["restart"].set_visible(running)
         self.actions["stop"].set_visible(running)
+        self.sign_in.set_visible(portal)
+        if portal != (self.notification is not None):  # a new portal, or one that is gone
+            self.notify(portal)
         write_status(verdict)
         self.busy = False
         return False
@@ -135,8 +182,8 @@ def available() -> bool:
 def main() -> None:
     import gi
     gi.require_version("Gtk", "3.0"), gi.require_version("Gdk", "3.0"), gi.require_version("AyatanaAppIndicator3", "0.1")
-    from gi.repository import AyatanaAppIndicator3, Gdk, GLib, Gtk
-    Tray(Gtk, Gdk, GLib, AyatanaAppIndicator3)
+    from gi.repository import AyatanaAppIndicator3, Gdk, Gio, GLib, Gtk
+    Tray(Gtk, Gdk, GLib, Gio, AyatanaAppIndicator3)
     Gtk.main()
 
 

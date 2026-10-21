@@ -1,0 +1,6 @@
+#!/usr/sbin/nft -f
+# Private LAN addresses for the lockdown. sing-box.service loads this file each time sing-box
+# starts, and it flushes the lan chain when sing-box stops. detour linux install writes the file.
+flush chain inet detour lan
+add rule inet detour lan ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+add rule inet detour lan ip6 daddr fd00::/8 accept

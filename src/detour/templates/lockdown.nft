@@ -1,0 +1,57 @@
+#!/usr/sbin/nft -f
+# detour lockdown. detour linux install writes this file, and detour-lockdown.service loads it at
+# every boot, before the network starts. Outside the sing-box tun, only this traffic can leave:
+#   - sing-box itself (user sing-box): its direct connections and the WireGuard tunnel
+#   - tailscaled (mark 0x80000), and the tailnet on tailscale0
+#   - DHCP and IPv6 neighbor discovery, so that the network can come up
+#   - link-local, multicast, and broadcast addresses, and the container bridges of this machine
+#   - private LAN addresses, but only while sing-box runs (see the lan chain)
+# Everything else is refused, DNS included. When sing-box stops, no listed address or name can
+# leave the machine.
+
+# Replace the table in one transaction: the old rules stay in force until the new ones are in place.
+table inet detour
+delete table inet detour
+
+table inet detour {
+	# Empty at boot. While sing-box runs, its unit loads /etc/detour/lan.nft into this chain, and
+	# it flushes the chain again when sing-box stops. So a listed private range cannot leave
+	# through the LAN while the tunnel is down.
+	chain lan {
+	}
+
+	chain egress {
+		# the tun: sing-box decides what goes through the tunnel and what goes direct
+		oifname "sbtun0" accept
+		# the tailnet only: an exit node or a public subnet route sends traffic around the tunnel
+		oifname "tailscale0" ip daddr 100.64.0.0/10 accept
+		oifname "tailscale0" ip6 daddr fd7a:115c:a1e0::/48 accept
+		# bridges to containers and virtual machines: their traffic stays on this machine
+		oifname { "docker0", "lxdbr0" } accept
+		oifname "br-*" accept
+		oifname "virbr*" accept
+		# DNS goes only through sing-box: a lookup outside it can reveal a listed name
+		meta l4proto { tcp, udp } th dport 53 reject
+		ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
+		ip6 daddr { fe80::/10, ff00::/8 } accept
+		jump lan
+		# this also refuses native IPv6 to the internet: the tunnel carries IPv4 only
+		reject with icmpx admin-prohibited
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" accept
+		meta skuid __SINGBOX_UID__ accept
+		meta mark & 0x00ff0000 == 0x00080000 accept
+		udp sport 68 udp dport 67 accept
+		udp sport 546 udp dport 547 accept
+		icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+		jump egress
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		jump egress
+	}
+}

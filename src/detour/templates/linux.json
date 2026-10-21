@@ -4,8 +4,10 @@
   "log": { "level": "warn", "timestamp": true },
   "dns": {
     "servers": [
-      // the network's own resolver, learned over DHCP; fast, and it follows you to other networks
-      { "type": "dhcp", "tag": "dns-direct" },
+      // the network's own resolver: NetworkManager learns it, and sing-box reads it from systemd-resolved
+      // over D-Bus. It follows you to other networks. A dhcp server is not used: it needs a broadcast
+      // reply, and on some Wi-Fi networks that reply never arrives.
+      { "type": "local", "tag": "dns-direct" },
       // listed domains get an address from this range; the real lookup happens later, inside the tunnel
       { "type": "fakeip", "tag": "dns-fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" },
       // the resolver inside the tunnel, used only for listed domains
@@ -16,7 +18,10 @@
       { "domain": ["use-application-dns.net"], "action": "predefined", "rcode": "NXDOMAIN" },
       // no HTTPS or SVCB records for listed domains: they could reveal real addresses
       { "rule_set": ["vpn-domains"], "query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR" },
-      { "rule_set": ["vpn-domains"], "query_type": ["A", "AAAA"], "action": "route", "server": "dns-fakeip" }
+      { "rule_set": ["vpn-domains"], "query_type": ["A", "AAAA"], "action": "route", "server": "dns-fakeip" },
+      // every other query for a listed name (TXT, MX, and more) goes through the tunnel too, so that
+      // the local network never sees a listed name
+      { "rule_set": ["vpn-domains"], "action": "route", "server": "dns-vpn" }
     ],
     "final": "dns-direct",
     "reverse_mapping": false
@@ -31,8 +36,9 @@
       "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "mtu": 1420,
       "auto_route": true, "strict_route": false,
       "route_address": ["0.0.0.0/0", "fc00::/18"], "stack": "mixed" },
-    // systemd-resolved sends every query here (the install adds a resolved drop-in)
-    { "type": "direct", "tag": "dns-in", "listen": "127.0.0.1", "listen_port": 53 }
+    // every program asks here: /etc/resolv.conf names 127.0.0.53, and the install turns off the stub
+    // listener of systemd-resolved. When sing-box is down, nothing answers, so no name can resolve.
+    { "type": "direct", "tag": "dns-in", "listen": "127.0.0.53", "listen_port": 53 }
   ],
   "endpoints": [
     { "type": "wireguard", "tag": "wg", "system": false, "mtu": 1420,
@@ -51,7 +57,10 @@
     "auto_detect_interface": true,
     "default_domain_resolver": "dns-direct",
     "rule_set": [
+      // initial_path is the copy that install saved. sing-box starts from it when it has no cached
+      // list, for example after a purge, or behind a captive portal before you sign in.
       { "type": "remote", "tag": "vpn-domains", "format": "source", "url": "__RULES_URL__",
+        "initial_path": "/etc/sing-box/vpn-domains.jsonc",
         "http_client": "direct-client", "update_interval": "5m" }
     ],
     // order is the policy: the first matching rule wins

@@ -1,4 +1,6 @@
 """Tests for detour.render, plus a sing-box check of the real Linux template when the binary exists."""
+import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,12 +28,27 @@ class RenderTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render.render("__X__", {"x": bad})
 
-    def test_linux_template_renders_and_checks(self):
+    def rendered(self) -> str:
         values = dict(rules_url="https://example.invalid/r.jsonc", server_host="203.0.113.1", server_port="51820",
                       server_public_key="3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=", tunnel_dns="10.0.0.1",
                       device_address="10.0.0.2/24", device_private_key=wireguard.generate_private_key(),
                       api_secret="secret")
-        out = render.render(TEMPLATE.read_text(), values)
+        return render.render(TEMPLATE.read_text(), values)
+
+    def test_linux_dns_never_sends_a_listed_name_to_the_network(self):
+        config = json.loads(re.sub(r"^\s*//.*$", "", self.rendered(), flags=re.MULTILINE))
+        dns = config["dns"]
+        servers = {s["tag"]: s for s in dns["servers"]}
+        self.assertEqual(servers["dns-direct"]["type"], "local")  # no dhcp: its broadcast reply can get lost
+        self.assertEqual(dns["final"], "dns-direct")
+        listed = [r for r in dns["rules"] if r.get("rule_set") == ["vpn-domains"]]
+        self.assertEqual(listed[-1], {"rule_set": ["vpn-domains"], "action": "route", "server": "dns-vpn"})
+        self.assertTrue(all(r.get("server") != "dns-direct" for r in listed))
+        inbound = {i["tag"]: i for i in config["inbounds"]}
+        self.assertEqual(inbound["dns-in"]["listen"], "127.0.0.53")
+
+    def test_linux_template_renders_and_checks(self):
+        out = self.rendered()
         self.assertEqual(render.PLACEHOLDER.findall(out), [])
         if shutil.which("sing-box"):
             with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
